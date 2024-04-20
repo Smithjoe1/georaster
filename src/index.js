@@ -2,7 +2,7 @@
 /* global Blob */
 /* global URL */
 
-import fetch from 'cross-fetch';
+//import fetch from 'cross-fetch';
 import Worker from './worker.js';
 import parseData from './parseData.js';
 import {unflatten} from './utils.js';
@@ -44,7 +44,7 @@ class GeoRaster {
   constructor(data, metadata, debug, options = {}) {
     if (debug) console.log('starting GeoRaster.constructor with', data, metadata);
 
-    this._web_worker_is_available = typeof window !== 'undefined' && typeof window.Worker !== 'undefined';
+    this._web_worker_is_available = typeof Worker !== 'undefined';
     this._blob_is_available = typeof Blob !== 'undefined';
     this._url_is_available = typeof URL !== 'undefined';
     this._options = options;
@@ -144,7 +144,7 @@ class GeoRaster {
             resolve(this);
           };
           if (this._web_worker_is_available && !this.readOnDemand) {
-            const worker = new Worker();
+            const worker = new Worker(); // Replace 'worker.js' with the path to your worker file
             worker.onmessage = (e) => {
               if (debug) console.log('main thread received message:', e);
               if (e.data.error) reject(e.data.error);
@@ -166,7 +166,7 @@ class GeoRaster {
               if (debug) console.log('result:', result);
               parseDataDone(result);
             }).catch(reject);
-          }
+          }          
         } else {
           reject('couldn\'t find a way to parse');
         }
@@ -193,6 +193,8 @@ if (typeof module !== 'undefined' && typeof module.exports !== 'undefined') {
 /*
     The following code allows you to use GeoRaster without requiring
 */
+
+
 if (typeof window !== 'undefined') {
   window['parseGeoraster'] = parseGeoraster;
 } else if (typeof self !== 'undefined') {
