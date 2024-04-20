@@ -25,7 +25,7 @@
     "tiff"
   ],
   "scripts": {
-    "build": "npm run build:prod"
+    "build": "npm install && webpack ",
   },
   "author": "Daniel Dufour and Steve Peyton",
   "license": "Apache-2.0",
