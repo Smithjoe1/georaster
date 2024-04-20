@@ -1,76 +1,78 @@
 const webpack = require('webpack');
 const path = require('path');
-const { BundleAnalyzerPlugin } = require('webpack-bundle-analyzer');
-const ThreadsPlugin = require('threads-plugin');
+//const { BundleAnalyzerPlugin } = require('webpack-bundle-analyzer');
+//const ThreadsPlugin = require('threads-plugin');
+
+
+//module.exports = {
+//  entry: './src/index.js',
+//  output: {
+//    filename: 'main.js',
+//    path: path.resolve(__dirname, 'dist'),
+//  },
+//};
 
 module.exports = (env, argv) => {
 
-  const {mode, target} = argv;
-  const targetFileNamePart = target === 'node' ? '' : '.browser';
+    const {mode, target} = argv;
+    const targetFileNamePart = target === 'node' ? '' : '.browser';
 
-  const plugins = [
-    new ThreadsPlugin()
-  ];
-  if (process.env.ANALYZE_GEORASTER_BUNDLE) {
-    plugins.push(new BundleAnalyzerPlugin({
-      analyzerHost: process.env.ANALYZER_HOST || "127.0.0.1"
-    }));
-  }
+    const externals = {};
+    const node = {};
 
-  const externals = {};
-  const node = {};
+    //if (target === 'web') node['fs'] = 'empty';
 
-  // neutralize import 'threads/register' in geotiff.js
-  node['threads/register'] = 'empty';
+    return {
+        entry: './src/index.js',
+        mode,
+        target: target,
+        output: {
+          path: path.resolve(__dirname, 'dist'),
+          filename: mode === 'production' ? `georaster${targetFileNamePart}.bundle.min.js` : `georaster${targetFileNamePart}.bundle.js`,
+          globalObject: 'typeof self !== \'undefined\' ? self : this',
+          library: 'GeoRaster',
+          libraryTarget: 'umd',
+        },
 
-  // can't access fs on the web
-  if (target === 'web') node['fs'] = 'empty';
-
-  return {
-    entry: './src/index.js',
-    mode,
-    target: target,
-    output: {
-      path: path.resolve(__dirname, 'dist'),
-      filename: mode === 'production' ? `georaster${targetFileNamePart}.bundle.min.js` : `georaster${targetFileNamePart}.bundle.js`,
-      globalObject: 'typeof self !== \'undefined\' ? self : this',
-      library: 'GeoRaster',
-      libraryTarget: 'umd',
+        module: {
+            rules: [
+              {
+                test: /\.(?:js|mjs|cjs)$/,
+                exclude: /node_modules/,
+                use: {
+                  loader: 'babel-loader',
+                  options: {
+                    presets: [
+                      ['@babel/preset-env', { targets: "defaults" }]
+                    ]
+                  }
+                }
+              }
+    ].filter(Boolean),
     },
-    module: {
-      rules: [
-        {
-          test: /\.js$/,
-          exclude: /(node_modules)/,
-          use: {
-            loader: 'babel-loader',
-            options: {
-              presets: ['env'],
-            },
-          },
+    optimization: {
+        minimize: false
+     },
+     node: {
+      },
+      resolve: {
+        fallback: {
+          fs: require.resolve('browserify-fs'),
+           // "fs": false,
+            "tls": false,
+            "net": false,
+            "path": false,
+            "zlib": false,
+            "http": false,
+            "https": false,
+            "stream": false,
+            "crypto": false,
         },
-        {
-          test: /worker\.js$/,
-          use: {
-            loader: 'worker-loader',
-            options: {
-              inline: true,
-              fallback: false,
-            },
-          },
-        },
-        target === "web" && {
-          test: path.resolve(__dirname, 'node_modules/node-fetch/browser.js'),
-          use: 'null-loader'
-        },
-        target === "web" && {
-          test: path.resolve(__dirname, 'node_modules/tiny-worker/lib/index.js'),
-          use: 'null-loader'
-        }
-      ].filter(Boolean),
-    },
-    node,
+      },
+
+
+
     externals,
-    plugins
+  //  plugins
   };
 };
