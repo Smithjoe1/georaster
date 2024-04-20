@@ -1,3 +1,18 @@
+# Update
+Modified webpack config and npm packages to use webpack 5 and current versions of dependancies.
+
+I was getting javascript invalid size error "Fatal JavaScript invalid size error 174895934 (see crbug.com/1201626)" when setting target via " --target web" so I have the config to only compile to web version.
+
+I have changed the worker functions to use Webpack 5 native versions. 
+I have also changed to workaround the Webpack 5 polyfill functions. 
+Not sure if any of it is the correct way to acomplish, but it compiles and works when I load it on my browser.
+
+I have also set compile to not minimize the build for ease of debugging. I'm trying to find out why low resolution geotiff files aren't being smoothed with the resampling function.
+
+Compile via "npm run build"
+
+
+
 # georaster
 Wrapper around Georeferenced Rasters like GeoTIFF, NetCDF, JPG, and PNG that provides a standard interface.  You can also create your own georaster from simple JavaScript objects.
 
