@@ -25,14 +25,14 @@
     "tiff"
   ],
   "scripts": {
-    "init": "npm install && webpack ",
-    "build": "npm run build:prod",
-    "build:prod": "npm run build:prod:node && npm run build:prod:web",
-    "build:prod:node": "webpack --mode production --target node",
-    "build:prod:web": "webpack --mode production --target web"
+    "build": "npm run build:prod"
   },
-  "author": "",
-  "license": "MIT",
+  "author": "Daniel Dufour and Steve Peyton",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/GeoTIFF/georaster/issues"
+  },
+  "homepage": "https://github.com/GeoTIFF/georaster#readme",
 
   "devDependencies": {
 
