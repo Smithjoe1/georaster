@@ -12,6 +12,10 @@ I have also set compile to not minimize the build for ease of debugging. I'm try
 Compile via "npm run build"
 
 
+Script called Herbie.py has been created to use https://github.com/blaylockbk/Herbie to download latest NOAA data and convert to GEOTIFF to display over a leaflet tile server. My current server uses Matrin https://github.com/maplibre/martin to load global PMTiles data file and is parsed to Protomaps Leaflet. https://github.com/protomaps/protomaps-leaflet
+This provides a nearly fully client side rendered global weather maps and is a placeholder here until I finish building the rest of the page.
+
+
 
 # georaster
 Wrapper around Georeferenced Rasters like GeoTIFF, NetCDF, JPG, and PNG that provides a standard interface.  You can also create your own georaster from simple JavaScript objects.
