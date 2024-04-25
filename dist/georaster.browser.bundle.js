@@ -11,16 +11,696 @@
 return /******/ (() => { // webpackBootstrap
 /******/ 	var __webpack_modules__ = ({
 
-/***/ 385:
-/***/ ((module, __webpack_exports__, __webpack_require__) => {
+/***/ 9251:
+/***/ ((module, __unused_webpack___webpack_exports__, __webpack_require__) => {
+
+"use strict";
+
+// NAMESPACE OBJECT: ./src/worker.js
+var worker_namespaceObject = {};
+__webpack_require__.r(worker_namespaceObject);
+
+// EXTERNAL MODULE: ./src_geotiff/geotiff.js + 26 modules
+var geotiff = __webpack_require__(4617);
+// EXTERNAL MODULE: ../../node_modules/geotiff-palette/index.js
+var geotiff_palette = __webpack_require__(8286);
+// EXTERNAL MODULE: ../../node_modules/calc-image-stats/dist/calc-image-stats.min.js
+var calc_image_stats_min = __webpack_require__(1353);
+var calc_image_stats_min_default = /*#__PURE__*/__webpack_require__.n(calc_image_stats_min);
+// EXTERNAL MODULE: ./src/utils.js
+var utils = __webpack_require__(2347);
+;// CONCATENATED MODULE: ./src/parseData.js
+
+
+
+
+function processResult(result) {
+  const stats = calc_image_stats_min_default()(result.values, {
+    height: result.height,
+    layout: '[band][row][column]',
+    noData: result.noDataValue,
+    precise: false,
+    stats: ['max', 'min', 'range'],
+    width: result.width
+  });
+  result.maxs = stats.bands.map(band => band.max);
+  result.mins = stats.bands.map(band => band.min);
+  result.ranges = stats.bands.map(band => band.range);
+  return result;
+}
+
+/* We're not using async because trying to avoid dependency on babel's polyfill
+There can be conflicts when GeoRaster is used in another project that is also
+using @babel/polyfill */
+function parseData(data, debug) {
+  return new Promise((resolve, reject) => {
+    try {
+      if (debug) console.log('starting parseData with', data);
+      if (debug) console.log('\tGeoTIFF:', typeof GeoTIFF);
+      const result = {};
+      let height, width;
+      if (data.rasterType === 'object') {
+        result.values = data.data;
+        result.height = height = data.metadata.height || result.values[0].length;
+        result.width = width = data.metadata.width || result.values[0][0].length;
+        result.pixelHeight = data.metadata.pixelHeight;
+        result.pixelWidth = data.metadata.pixelWidth;
+        result.projection = data.metadata.projection;
+        result.xmin = data.metadata.xmin;
+        result.ymax = data.metadata.ymax;
+        result.noDataValue = data.metadata.noDataValue;
+        result.numberOfRasters = result.values.length;
+        result.xmax = result.xmin + result.width * result.pixelWidth;
+        result.ymin = result.ymax - result.height * result.pixelHeight;
+        result._data = null;
+        resolve(processResult(result));
+      } else if (data.rasterType === 'geotiff') {
+        result._data = data.data;
+        const initArgs = [data.data];
+        let initFunction = geotiff.fromArrayBuffer;
+        if (data.sourceType === 'url') {
+          initFunction = geotiff.fromUrl;
+          initArgs.push(data.options);
+        } else if (data.sourceType === 'Blob') {
+          initFunction = geotiff.fromBlob;
+        }
+        if (debug) console.log('data.rasterType is geotiff');
+        resolve(initFunction(...initArgs).then(geotiff => {
+          if (debug) console.log('geotiff:', geotiff);
+          return geotiff.getImage().then(image => {
+            try {
+              if (debug) console.log('image:', image);
+              const fileDirectory = image.fileDirectory;
+              const {
+                GeographicTypeGeoKey,
+                ProjectedCSTypeGeoKey
+              } = image.getGeoKeys() || {};
+              result.projection = ProjectedCSTypeGeoKey || GeographicTypeGeoKey || data.metadata.projection;
+              if (debug) console.log('projection:', result.projection);
+              result.height = height = image.getHeight();
+              if (debug) console.log('result.height:', result.height);
+              result.width = width = image.getWidth();
+              if (debug) console.log('result.width:', result.width);
+              const [resolutionX, resolutionY] = image.getResolution();
+              result.pixelHeight = Math.abs(resolutionY);
+              result.pixelWidth = Math.abs(resolutionX);
+              const [originX, originY] = image.getOrigin();
+              result.xmin = originX;
+              result.xmax = result.xmin + width * result.pixelWidth;
+              result.ymax = originY;
+              result.ymin = result.ymax - height * result.pixelHeight;
+              result.noDataValue = fileDirectory.GDAL_NODATA ? parseFloat(fileDirectory.GDAL_NODATA) : null;
+              result.numberOfRasters = fileDirectory.SamplesPerPixel;
+              if (fileDirectory.ColorMap) {
+                result.palette = (0,geotiff_palette.getPalette)(image);
+              }
+              if (!data.readOnDemand) {
+                return image.readRasters().then(rasters => {
+                  result.values = rasters.map(valuesInOneDimension => {
+                    return (0,utils.unflatten)(valuesInOneDimension, {
+                      height,
+                      width
+                    });
+                  });
+                  return processResult(result);
+                });
+              } else {
+                result._geotiff = geotiff;
+                return result;
+              }
+            } catch (error) {
+              reject(error);
+              console.error('[georaster] error parsing georaster:', error);
+            }
+          });
+        }));
+      }
+    } catch (error) {
+      reject(error);
+      console.error('[georaster] error parsing georaster:', error);
+    }
+  });
+}
+;// CONCATENATED MODULE: ./src/worker.js
+
+
+// this is a bit of a hack to trick geotiff to work with web worker
+// eslint-disable-next-line no-unused-vars
+const worker_window = (/* unused pure expression or super */ null && (self));
+onmessage = e => {
+  const data = e.data;
+  parseData(data).then(result => {
+    const transferBuffers = [];
+    if (result.values) {
+      let last;
+      result.values.forEach(a => a.forEach(_ref => {
+        let {
+          buffer
+        } = _ref;
+        if (buffer instanceof ArrayBuffer && buffer !== last) {
+          transferBuffers.push(buffer);
+          last = buffer;
+        }
+      }));
+    }
+    if (result._data instanceof ArrayBuffer) {
+      transferBuffers.push(result._data);
+    }
+    postMessage(result, transferBuffers);
+    close();
+  }).catch(error => {
+    postMessage({
+      error
+    });
+    close();
+  });
+};
+;// CONCATENATED MODULE: ../../node_modules/georaster-to-canvas/index.js
+/* global ImageData */
+
+function toImageData(georaster, canvasWidth, canvasHeight) {
+  if (georaster.values) {
+    const { noDataValue, mins, ranges, values } = georaster;
+    const numBands = values.length;
+    const xRatio = georaster.width / canvasWidth;
+    const yRatio = georaster.height / canvasHeight;
+    const data = new Uint8ClampedArray(canvasWidth * canvasHeight * 4);
+    for (let rowIndex = 0; rowIndex < canvasHeight; rowIndex++) {
+      for (let columnIndex = 0; columnIndex < canvasWidth; columnIndex++) {
+        const rasterRowIndex = Math.round(rowIndex * yRatio);
+        const rasterColumnIndex = Math.round(columnIndex * xRatio);
+        const pixelValues = values.map(band => {
+          try {
+            return band[rasterRowIndex][rasterColumnIndex];
+          } catch (error) {
+            console.error(error);
+          }
+        });
+        const haveDataForAllBands = pixelValues.every(value => value !== undefined && value !== noDataValue);
+        if (haveDataForAllBands) {
+          const i = (rowIndex * (canvasWidth * 4)) + 4 * columnIndex;
+          if (numBands === 1) {
+            const pixelValue = Math.round(pixelValues[0]);
+            const scaledPixelValue = Math.round((pixelValue - mins[0]) / ranges[0] * 255);
+            data[i] = scaledPixelValue;
+            data[i + 1] = scaledPixelValue;
+            data[i + 2] = scaledPixelValue;
+            data[i + 3] = 255;
+          } else if (numBands === 3) {
+            try {
+              const [r, g, b] = pixelValues;
+              data[i] = r;
+              data[i + 1] = g;
+              data[i + 2] = b;
+              data[i + 3] = 255;
+            } catch (error) {
+              console.error(error);
+            }
+          } else if (numBands === 4) {
+            try {
+              const [r, g, b, a] = pixelValues;
+              data[i] = r;
+              data[i + 1] = g;
+              data[i + 2] = b;
+              data[i + 3] = a;
+            } catch (error) {
+              console.error(error);
+            }
+          }
+        }
+      }
+    }
+    return new ImageData(data, canvasWidth, canvasHeight);
+  }
+}
+
+function toCanvas(georaster, options) {
+  if (typeof ImageData === "undefined") {
+    throw `toCanvas is not supported in your environment`;
+  } else {
+    const canvas = document.createElement("CANVAS");
+    const canvasHeight = options && options.height ? Math.min(georaster.height, options.height) : Math.min(georaster.height, 100);
+    const canvasWidth = options && options.width ? Math.min(georaster.width, options.width) : Math.min(georaster.width, 100);
+    canvas.height = canvasHeight;
+    canvas.width = canvasWidth;
+    canvas.style.minHeight = "200px";
+    canvas.style.minWidth = "400px";
+    canvas.style.maxWidth = "100%";
+    const context = canvas.getContext("2d");
+    const imageData = toImageData(georaster, canvasWidth, canvasHeight);
+    context.putImageData(imageData, 0, 0);
+    return canvas;
+  }
+}
+
+
+;// CONCATENATED MODULE: ./src/index.js
+/* module decorator */ module = __webpack_require__.hmd(module);
+
+
+/* global Blob */
+/* global URL */
+
+//import fetch from 'cross-fetch';
+
+
+
+
+
+function urlExists(url) {
+  try {
+    return fetch(url, {
+      method: 'HEAD'
+    }).then(response => response.status === 200).catch(error => false);
+  } catch (error) {
+    return Promise.resolve(false);
+  }
+}
+function getValues(geotiff, options) {
+  const {
+    left,
+    top,
+    right,
+    bottom,
+    width,
+    height,
+    resampleMethod
+  } = options;
+  //const {left, top, right, bottom, width, height, resampleMethod, resampleSteps} = options;
+  // note this.image and this.geotiff both have a readRasters method;
+  // they are not the same thing. use this.geotiff for experimental version
+  // that reads from best overview
+  return geotiff.readRasters({
+    window: [left, top, right, bottom],
+    width: width,
+    height: height,
+    resampleMethod: resampleMethod || 'bilinear'
+  }).then(rasters => {
+    /*
+      The result appears to be an array with a width and height property set.
+      We only need the values, assuming the user remembers the width and height.
+      Ex: [[0,27723,...11025,12924], width: 10, height: 10]
+    */
+    return rasters.map(raster => (0,utils.unflatten)(raster, {
+      height,
+      width
+    }));
+  });
+}
+;
+class GeoRaster {
+  constructor(data, metadata, debug) {
+    let options = arguments.length > 3 && arguments[3] !== undefined ? arguments[3] : {};
+    if (debug) console.log('starting GeoRaster.constructor with', data, metadata);
+    this._web_worker_is_available = typeof worker_namespaceObject["default"] !== 'undefined';
+    this._blob_is_available = typeof Blob !== 'undefined';
+    this._url_is_available = typeof URL !== 'undefined';
+    this._options = options;
+
+    // check if should convert to buffer
+    if (typeof data === 'object' && data.constructor && data.constructor.name === 'Buffer' && Buffer.isBuffer(data) === false) {
+      data = new Buffer(data);
+    }
+    this.readOnDemand = false;
+    if (typeof data === 'string') {
+      if (debug) console.log('data is a url');
+      this._data = data;
+      this._url = data;
+      this.rasterType = 'geotiff';
+      this.sourceType = 'url';
+      this.readOnDemand = true;
+    } else if (typeof Blob !== 'undefined' && data instanceof Blob) {
+      this._data = data;
+      this.rasterType = 'geotiff';
+      this.sourceType = 'Blob';
+    } else if (typeof Buffer !== 'undefined' && Buffer.isBuffer(data)) {
+      // this is node
+      if (debug) console.log('data is a buffer');
+      this._data = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+      this.rasterType = 'geotiff';
+      this.sourceType = 'Buffer';
+    } else if (data instanceof ArrayBuffer) {
+      // this is browser
+      this._data = data;
+      this.rasterType = 'geotiff';
+      this.sourceType = 'ArrayBuffer';
+      this._metadata = metadata;
+    } else if (Array.isArray(data) && metadata) {
+      this._data = data;
+      this.rasterType = 'object';
+      this._metadata = metadata;
+    }
+    if (metadata && metadata.readOnDemand !== undefined) {
+      this.readOnDemand = metadata.readOnDemand;
+    }
+    if (debug) console.log('this after construction:', this);
+  }
+  preinitialize(debug) {
+    if (debug) console.log('starting preinitialize');
+    if (this._url) {
+      // initialize these outside worker to avoid weird worker error
+      // I don't see how cache option is passed through with fromUrl,
+      // though constantinius says it should work: https://github.com/geotiffjs/geotiff.js/issues/61
+      const ovrURL = this._url + '.ovr';
+      return urlExists(ovrURL).then(ovrExists => {
+        if (debug) console.log('overview exists:', ovrExists);
+        this._options = Object.assign({}, {
+          cache: true,
+          forceXHR: false
+        }, this._options);
+        if (debug) console.log('options:', this._options);
+        if (ovrExists) {
+          return (0,geotiff.fromUrls)(this._url, [ovrURL], this._options);
+        } else {
+          return (0,geotiff.fromUrl)(this._url, this._options);
+        }
+      });
+    } else {
+      // no pre-initialization steps required if not using a Cloud Optimized GeoTIFF
+      return Promise.resolve();
+    }
+  }
+  initialize(debug) {
+    return this.preinitialize(debug).then(geotiff => {
+      return new Promise((resolve, reject) => {
+        if (debug) console.log('starting GeoRaster.initialize');
+        if (debug) console.log('this', this);
+        if (this.rasterType === 'object' || this.rasterType === 'geotiff' || this.rasterType === 'tiff') {
+          const parseDataArgs = {
+            data: this._data,
+            options: this._options,
+            rasterType: this.rasterType,
+            sourceType: this.sourceType,
+            readOnDemand: this.readOnDemand,
+            metadata: this._metadata
+          };
+          const parseDataDone = data => {
+            for (const key in data) {
+              this[key] = data[key];
+            }
+            if (this.readOnDemand) {
+              if (this._url) this._geotiff = geotiff;
+              this.getValues = function (options) {
+                return getValues(this._geotiff, options);
+              };
+            }
+            this.toCanvas = function (options) {
+              return toCanvas(this, options);
+            };
+            resolve(this);
+          };
+          if (this._web_worker_is_available && !this.readOnDemand) {
+            const worker = new worker_namespaceObject["default"](); // Replace 'worker.js' with the path to your worker file
+            worker.onmessage = e => {
+              if (debug) console.log('main thread received message:', e);
+              if (e.data.error) reject(e.data.error);else parseDataDone(e.data);
+            };
+            worker.onerror = e => {
+              if (debug) console.log('main thread received error:', e);
+              reject(e);
+            };
+            if (debug) console.log('about to postMessage');
+            if (this._data instanceof ArrayBuffer) {
+              worker.postMessage(parseDataArgs, [this._data]);
+            } else {
+              worker.postMessage(parseDataArgs);
+            }
+          } else {
+            if (debug && !this._web_worker_is_available) console.log('web worker is not available');
+            parseData(parseDataArgs, debug).then(result => {
+              if (debug) console.log('result:', result);
+              parseDataDone(result);
+            }).catch(reject);
+          }
+        } else {
+          reject('couldn\'t find a way to parse');
+        }
+      });
+    });
+  }
+}
+const parseGeoraster = function (input, metadata, debug) {
+  let options = arguments.length > 3 && arguments[3] !== undefined ? arguments[3] : {};
+  if (debug) console.log('starting parseGeoraster with ', input, metadata);
+  if (input === undefined) {
+    const errorMessage = '[Georaster.parseGeoraster] Error. You passed in undefined to parseGeoraster. We can\'t make a raster out of nothing!';
+    throw Error(errorMessage);
+  }
+  return new GeoRaster(input, metadata, debug, options).initialize(debug);
+};
+if ( true && typeof module.exports !== 'undefined') {
+  module.exports = parseGeoraster;
+}
+
+/*
+    The following code allows you to use GeoRaster without requiring
+*/
+
+if (typeof window !== 'undefined') {
+  window['parseGeoraster'] = parseGeoraster;
+} else if (typeof self !== 'undefined') {
+  self['parseGeoraster'] = parseGeoraster; // jshint ignore:line
+}
+
+/***/ }),
+
+/***/ 2347:
+/***/ ((module) => {
+
+function countIn1D(array) {
+  return array.reduce((counts, value) => {
+    if (counts[value] === undefined) {
+      counts[value] = 1;
+    } else {
+      counts[value]++;
+    }
+    return counts;
+  }, {});
+}
+function countIn2D(rows) {
+  return rows.reduce((counts, values) => {
+    values.forEach(value => {
+      if (counts[value] === undefined) {
+        counts[value] = 1;
+      } else {
+        counts[value]++;
+      }
+    });
+    return counts;
+  }, {});
+}
+
+/*
+Takes in a flattened one dimensional typed array
+representing two-dimensional pixel values
+and returns an array of typed arrays with the same buffer.
+*/
+function unflatten(valuesInOneDimension, size) {
+  const {
+    height,
+    width
+  } = size;
+  const valuesInTwoDimensions = [];
+  for (let y = 0; y < height; y++) {
+    const start = y * width;
+    const end = start + width;
+    valuesInTwoDimensions.push(valuesInOneDimension.subarray(start, end));
+  }
+  return valuesInTwoDimensions;
+}
+module.exports = {
+  countIn1D,
+  countIn2D,
+  unflatten
+};
+
+/***/ }),
+
+/***/ 3668:
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+
+// EXPORTS
+__webpack_require__.d(__webpack_exports__, {
+  A: () => (/* binding */ BaseDecoder)
+});
+
+;// CONCATENATED MODULE: ./src_geotiff/predictor.js
+function decodeRowAcc(row, stride) {
+  let length = row.length - stride;
+  let offset = 0;
+  do {
+    for (let i = stride; i > 0; i--) {
+      row[offset + stride] += row[offset];
+      offset++;
+    }
+    length -= stride;
+  } while (length > 0);
+}
+function decodeRowFloatingPoint(row, stride, bytesPerSample) {
+  let index = 0;
+  let count = row.length;
+  const wc = count / bytesPerSample;
+  while (count > stride) {
+    for (let i = stride; i > 0; --i) {
+      row[index + stride] += row[index];
+      ++index;
+    }
+    count -= stride;
+  }
+  const copy = row.slice();
+  for (let i = 0; i < wc; ++i) {
+    for (let b = 0; b < bytesPerSample; ++b) {
+      row[bytesPerSample * i + b] = copy[(bytesPerSample - b - 1) * wc + i];
+    }
+  }
+}
+function applyPredictor(block, predictor, width, height, bitsPerSample, planarConfiguration) {
+  if (!predictor || predictor === 1) {
+    return block;
+  }
+  for (let i = 0; i < bitsPerSample.length; ++i) {
+    if (bitsPerSample[i] % 8 !== 0) {
+      throw new Error('When decoding with predictor, only multiple of 8 bits are supported.');
+    }
+    if (bitsPerSample[i] !== bitsPerSample[0]) {
+      throw new Error('When decoding with predictor, all samples must have the same size.');
+    }
+  }
+  const bytesPerSample = bitsPerSample[0] / 8;
+  const stride = planarConfiguration === 2 ? 1 : bitsPerSample.length;
+  for (let i = 0; i < height; ++i) {
+    // Last strip will be truncated if height % stripHeight != 0
+    if (i * stride * width * bytesPerSample >= block.byteLength) {
+      break;
+    }
+    let row;
+    if (predictor === 2) {
+      // horizontal prediction
+      switch (bitsPerSample[0]) {
+        case 8:
+          row = new Uint8Array(block, i * stride * width * bytesPerSample, stride * width * bytesPerSample);
+          break;
+        case 16:
+          row = new Uint16Array(block, i * stride * width * bytesPerSample, stride * width * bytesPerSample / 2);
+          break;
+        case 32:
+          row = new Uint32Array(block, i * stride * width * bytesPerSample, stride * width * bytesPerSample / 4);
+          break;
+        default:
+          throw new Error(`Predictor 2 not allowed with ${bitsPerSample[0]} bits per sample.`);
+      }
+      decodeRowAcc(row, stride, bytesPerSample);
+    } else if (predictor === 3) {
+      // horizontal floating point
+      row = new Uint8Array(block, i * stride * width * bytesPerSample, stride * width * bytesPerSample);
+      decodeRowFloatingPoint(row, stride, bytesPerSample);
+    }
+  }
+  return block;
+}
+;// CONCATENATED MODULE: ./src_geotiff/compression/basedecoder.js
+
+class BaseDecoder {
+  async decode(fileDirectory, buffer) {
+    const decoded = await this.decodeBlock(buffer);
+    const predictor = fileDirectory.Predictor || 1;
+    if (predictor !== 1) {
+      const isTiled = !fileDirectory.StripOffsets;
+      const tileWidth = isTiled ? fileDirectory.TileWidth : fileDirectory.ImageWidth;
+      const tileHeight = isTiled ? fileDirectory.TileLength : fileDirectory.RowsPerStrip || fileDirectory.ImageLength;
+      return applyPredictor(decoded, predictor, tileWidth, tileHeight, fileDirectory.BitsPerSample, fileDirectory.PlanarConfiguration);
+    }
+    return decoded;
+  }
+}
+
+/***/ }),
+
+/***/ 9594:
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+
+"use strict";
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   E: () => (/* binding */ addDecoder),
+/* harmony export */   f: () => (/* binding */ getDecoder)
+/* harmony export */ });
+const registry = new Map();
+function addDecoder(cases, importFn) {
+  if (!Array.isArray(cases)) {
+    cases = [cases]; // eslint-disable-line no-param-reassign
+  }
+  cases.forEach(c => registry.set(c, importFn));
+}
+async function getDecoder(fileDirectory) {
+  const importFn = registry.get(fileDirectory.Compression);
+  if (!importFn) {
+    throw new Error(`Unknown compression method identifier: ${fileDirectory.Compression}`);
+  }
+  const Decoder = await importFn();
+  return new Decoder(fileDirectory);
+}
+
+// Add default decoders to registry (end-user may override with other implementations)
+addDecoder([undefined, 1], () => __webpack_require__.e(/* import() */ 888).then(__webpack_require__.bind(__webpack_require__, 9888)).then(m => m.default));
+addDecoder(5, () => __webpack_require__.e(/* import() */ 665).then(__webpack_require__.bind(__webpack_require__, 7665)).then(m => m.default));
+addDecoder(6, () => {
+  throw new Error('old style JPEG compression is not supported.');
+});
+addDecoder(7, () => __webpack_require__.e(/* import() */ 42).then(__webpack_require__.bind(__webpack_require__, 5042)).then(m => m.default));
+addDecoder([8, 32946], () => Promise.all(/* import() */[__webpack_require__.e(668), __webpack_require__.e(417)]).then(__webpack_require__.bind(__webpack_require__, 3417)).then(m => m.default));
+addDecoder(32773, () => __webpack_require__.e(/* import() */ 913).then(__webpack_require__.bind(__webpack_require__, 7913)).then(m => m.default));
+addDecoder(34887, () => Promise.all(/* import() */[__webpack_require__.e(668), __webpack_require__.e(156), __webpack_require__.e(18)]).then(__webpack_require__.bind(__webpack_require__, 1084)).then(async m => {
+  await m.zstd.init();
+  return m;
+}).then(m => m.default));
+addDecoder(50001, () => __webpack_require__.e(/* import() */ 135).then(__webpack_require__.bind(__webpack_require__, 7135)).then(m => m.default));
+
+/***/ }),
+
+/***/ 4617:
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
 "use strict";
 // ESM COMPAT FLAG
 __webpack_require__.r(__webpack_exports__);
 
-// NAMESPACE OBJECT: ./src/worker.js
-var worker_namespaceObject = {};
-__webpack_require__.r(worker_namespaceObject);
+// EXPORTS
+__webpack_require__.d(__webpack_exports__, {
+  BaseClient: () => (/* reexport */ BaseClient),
+  BaseDecoder: () => (/* reexport */ basedecoder/* default */.A),
+  BaseResponse: () => (/* reexport */ BaseResponse),
+  GeoTIFF: () => (/* binding */ GeoTIFF),
+  GeoTIFFImage: () => (/* reexport */ geotiffimage),
+  MultiGeoTIFF: () => (/* binding */ MultiGeoTIFF),
+  Pool: () => (/* reexport */ pool),
+  addDecoder: () => (/* reexport */ compression/* addDecoder */.E),
+  "default": () => (/* binding */ geotiff),
+  fromArrayBuffer: () => (/* binding */ fromArrayBuffer),
+  fromBlob: () => (/* binding */ fromBlob),
+  fromCustomClient: () => (/* binding */ fromCustomClient),
+  fromFile: () => (/* binding */ fromFile),
+  fromUrl: () => (/* binding */ fromUrl),
+  fromUrls: () => (/* binding */ fromUrls),
+  getDecoder: () => (/* reexport */ compression/* getDecoder */.f),
+  globals: () => (/* reexport */ globals),
+  rgb: () => (/* reexport */ rgb_namespaceObject),
+  setLogger: () => (/* reexport */ setLogger),
+  writeArrayBuffer: () => (/* binding */ writeArrayBuffer)
+});
+
+// NAMESPACE OBJECT: ./src_geotiff/rgb.js
+var rgb_namespaceObject = {};
+__webpack_require__.r(rgb_namespaceObject);
+__webpack_require__.d(rgb_namespaceObject, {
+  fromBlackIsZero: () => (fromBlackIsZero),
+  fromCIELab: () => (fromCIELab),
+  fromCMYK: () => (fromCMYK),
+  fromPalette: () => (fromPalette),
+  fromWhiteIsZero: () => (fromWhiteIsZero),
+  fromYCbCr: () => (fromYCbCr)
+});
 
 ;// CONCATENATED MODULE: ./node_modules/@petamoriken/float16/src/_util/messages.mjs
 const THIS_IS_NOT_AN_OBJECT = "This is not an object";
@@ -576,26 +1256,33 @@ function setFloat16(dataView, byteOffset, value, ...opts) {
 
 // EXTERNAL MODULE: ./node_modules/xml-utils/get-attribute.js
 var get_attribute = __webpack_require__(7379);
+var get_attribute_default = /*#__PURE__*/__webpack_require__.n(get_attribute);
 // EXTERNAL MODULE: ./node_modules/xml-utils/find-tags-by-name.js
 var find_tags_by_name = __webpack_require__(563);
-// EXTERNAL MODULE: ./node_modules/geotiff/dist-module/globals.js
-var globals = __webpack_require__(8622);
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/rgb.js
+var find_tags_by_name_default = /*#__PURE__*/__webpack_require__.n(find_tags_by_name);
+// EXTERNAL MODULE: ./src_geotiff/globals.js
+var globals = __webpack_require__(167);
+;// CONCATENATED MODULE: ./src_geotiff/rgb.js
 function fromWhiteIsZero(raster, max) {
-  const { width, height } = raster;
+  const {
+    width,
+    height
+  } = raster;
   const rgbRaster = new Uint8Array(width * height * 3);
   let value;
   for (let i = 0, j = 0; i < raster.length; ++i, j += 3) {
-    value = 256 - (raster[i] / max * 256);
+    value = 256 - raster[i] / max * 256;
     rgbRaster[j] = value;
     rgbRaster[j + 1] = value;
     rgbRaster[j + 2] = value;
   }
   return rgbRaster;
 }
-
 function fromBlackIsZero(raster, max) {
-  const { width, height } = raster;
+  const {
+    width,
+    height
+  } = raster;
   const rgbRaster = new Uint8Array(width * height * 3);
   let value;
   for (let i = 0, j = 0; i < raster.length; ++i, j += 3) {
@@ -606,9 +1293,11 @@ function fromBlackIsZero(raster, max) {
   }
   return rgbRaster;
 }
-
 function fromPalette(raster, colorMap) {
-  const { width, height } = raster;
+  const {
+    width,
+    height
+  } = raster;
   const rgbRaster = new Uint8Array(width * height * 3);
   const greenOffset = colorMap.length / 3;
   const blueOffset = colorMap.length / 3 * 2;
@@ -620,38 +1309,39 @@ function fromPalette(raster, colorMap) {
   }
   return rgbRaster;
 }
-
 function fromCMYK(cmykRaster) {
-  const { width, height } = cmykRaster;
+  const {
+    width,
+    height
+  } = cmykRaster;
   const rgbRaster = new Uint8Array(width * height * 3);
   for (let i = 0, j = 0; i < cmykRaster.length; i += 4, j += 3) {
     const c = cmykRaster[i];
     const m = cmykRaster[i + 1];
     const y = cmykRaster[i + 2];
     const k = cmykRaster[i + 3];
-
     rgbRaster[j] = 255 * ((255 - c) / 256) * ((255 - k) / 256);
     rgbRaster[j + 1] = 255 * ((255 - m) / 256) * ((255 - k) / 256);
     rgbRaster[j + 2] = 255 * ((255 - y) / 256) * ((255 - k) / 256);
   }
   return rgbRaster;
 }
-
 function fromYCbCr(yCbCrRaster) {
-  const { width, height } = yCbCrRaster;
+  const {
+    width,
+    height
+  } = yCbCrRaster;
   const rgbRaster = new Uint8ClampedArray(width * height * 3);
   for (let i = 0, j = 0; i < yCbCrRaster.length; i += 3, j += 3) {
     const y = yCbCrRaster[i];
     const cb = yCbCrRaster[i + 1];
     const cr = yCbCrRaster[i + 2];
-
-    rgbRaster[j] = (y + (1.40200 * (cr - 0x80)));
-    rgbRaster[j + 1] = (y - (0.34414 * (cb - 0x80)) - (0.71414 * (cr - 0x80)));
-    rgbRaster[j + 2] = (y + (1.77200 * (cb - 0x80)));
+    rgbRaster[j] = y + 1.40200 * (cr - 0x80);
+    rgbRaster[j + 1] = y - 0.34414 * (cb - 0x80) - 0.71414 * (cr - 0x80);
+    rgbRaster[j + 2] = y + 1.77200 * (cb - 0x80);
   }
   return rgbRaster;
 }
-
 const Xn = 0.95047;
 const Yn = 1.00000;
 const Zn = 1.08883;
@@ -659,83 +1349,46 @@ const Zn = 1.08883;
 // from https://github.com/antimatter15/rgb-lab/blob/master/color.js
 
 function fromCIELab(cieLabRaster) {
-  const { width, height } = cieLabRaster;
+  const {
+    width,
+    height
+  } = cieLabRaster;
   const rgbRaster = new Uint8Array(width * height * 3);
-
   for (let i = 0, j = 0; i < cieLabRaster.length; i += 3, j += 3) {
     const L = cieLabRaster[i + 0];
     const a_ = cieLabRaster[i + 1] << 24 >> 24; // conversion from uint8 to int8
     const b_ = cieLabRaster[i + 2] << 24 >> 24; // same
 
     let y = (L + 16) / 116;
-    let x = (a_ / 500) + y;
-    let z = y - (b_ / 200);
+    let x = a_ / 500 + y;
+    let z = y - b_ / 200;
     let r;
     let g;
     let b;
-
-    x = Xn * ((x * x * x > 0.008856) ? x * x * x : (x - (16 / 116)) / 7.787);
-    y = Yn * ((y * y * y > 0.008856) ? y * y * y : (y - (16 / 116)) / 7.787);
-    z = Zn * ((z * z * z > 0.008856) ? z * z * z : (z - (16 / 116)) / 7.787);
-
-    r = (x * 3.2406) + (y * -1.5372) + (z * -0.4986);
-    g = (x * -0.9689) + (y * 1.8758) + (z * 0.0415);
-    b = (x * 0.0557) + (y * -0.2040) + (z * 1.0570);
-
-    r = (r > 0.0031308) ? ((1.055 * (r ** (1 / 2.4))) - 0.055) : 12.92 * r;
-    g = (g > 0.0031308) ? ((1.055 * (g ** (1 / 2.4))) - 0.055) : 12.92 * g;
-    b = (b > 0.0031308) ? ((1.055 * (b ** (1 / 2.4))) - 0.055) : 12.92 * b;
-
+    x = Xn * (x * x * x > 0.008856 ? x * x * x : (x - 16 / 116) / 7.787);
+    y = Yn * (y * y * y > 0.008856 ? y * y * y : (y - 16 / 116) / 7.787);
+    z = Zn * (z * z * z > 0.008856 ? z * z * z : (z - 16 / 116) / 7.787);
+    r = x * 3.2406 + y * -1.5372 + z * -0.4986;
+    g = x * -0.9689 + y * 1.8758 + z * 0.0415;
+    b = x * 0.0557 + y * -0.2040 + z * 1.0570;
+    r = r > 0.0031308 ? 1.055 * r ** (1 / 2.4) - 0.055 : 12.92 * r;
+    g = g > 0.0031308 ? 1.055 * g ** (1 / 2.4) - 0.055 : 12.92 * g;
+    b = b > 0.0031308 ? 1.055 * b ** (1 / 2.4) - 0.055 : 12.92 * b;
     rgbRaster[j] = Math.max(0, Math.min(1, r)) * 255;
     rgbRaster[j + 1] = Math.max(0, Math.min(1, g)) * 255;
     rgbRaster[j + 2] = Math.max(0, Math.min(1, b)) * 255;
   }
   return rgbRaster;
 }
-
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/compression/index.js
-const registry = new Map();
-
-function addDecoder(cases, importFn) {
-  if (!Array.isArray(cases)) {
-    cases = [cases]; // eslint-disable-line no-param-reassign
-  }
-  cases.forEach((c) => registry.set(c, importFn));
-}
-
-async function getDecoder(fileDirectory) {
-  const importFn = registry.get(fileDirectory.Compression);
-  if (!importFn) {
-    throw new Error(`Unknown compression method identifier: ${fileDirectory.Compression}`);
-  }
-  const Decoder = await importFn();
-  return new Decoder(fileDirectory);
-}
-
-// Add default decoders to registry (end-user may override with other implementations)
-addDecoder([undefined, 1], () => __webpack_require__.e(/* import() */ 121).then(__webpack_require__.bind(__webpack_require__, 5121)).then((m) => m.default));
-addDecoder(5, () => __webpack_require__.e(/* import() */ 764).then(__webpack_require__.bind(__webpack_require__, 2764)).then((m) => m.default));
-addDecoder(6, () => {
-  throw new Error('old style JPEG compression is not supported.');
-});
-addDecoder(7, () => __webpack_require__.e(/* import() */ 457).then(__webpack_require__.bind(__webpack_require__, 6457)).then((m) => m.default));
-addDecoder([8, 32946], () => Promise.all(/* import() */[__webpack_require__.e(344), __webpack_require__.e(424)]).then(__webpack_require__.bind(__webpack_require__, 424)).then((m) => m.default));
-addDecoder(32773, () => __webpack_require__.e(/* import() */ 30).then(__webpack_require__.bind(__webpack_require__, 1030)).then((m) => m.default));
-addDecoder(34887, () => Promise.all(/* import() */[__webpack_require__.e(344), __webpack_require__.e(414)]).then(__webpack_require__.bind(__webpack_require__, 1414))
-  .then(async (m) => {
-    await m.zstd.init();
-    return m;
-  })
-  .then((m) => m.default),
-);
-addDecoder(50001, () => __webpack_require__.e(/* import() */ 568).then(__webpack_require__.bind(__webpack_require__, 6568)).then((m) => m.default));
-
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/resample.js
+// EXTERNAL MODULE: ./src_geotiff/compression/index.js
+var compression = __webpack_require__(9594);
+;// CONCATENATED MODULE: ./src_geotiff/resample.js
 /**
  * @module resample
  */
 
-function copyNewSize(array, width, height, samplesPerPixel = 1) {
+function copyNewSize(array, width, height) {
+  let samplesPerPixel = arguments.length > 3 && arguments[3] !== undefined ? arguments[3] : 1;
   return new (Object.getPrototypeOf(array).constructor)(width * height * samplesPerPixel);
 }
 
@@ -751,14 +1404,14 @@ function copyNewSize(array, width, height, samplesPerPixel = 1) {
 function resampleNearest(valueArrays, inWidth, inHeight, outWidth, outHeight) {
   const relX = inWidth / outWidth;
   const relY = inHeight / outHeight;
-  return valueArrays.map((array) => {
+  return valueArrays.map(array => {
     const newArray = copyNewSize(array, outWidth, outHeight);
     for (let y = 0; y < outHeight; ++y) {
       const cy = Math.min(Math.round(relY * y), inHeight - 1);
       for (let x = 0; x < outWidth; ++x) {
         const cx = Math.min(Math.round(relX * x), inWidth - 1);
-        const value = array[(cy * inWidth) + cx];
-        newArray[(y * outWidth) + x] = value;
+        const value = array[cy * inWidth + cx];
+        newArray[y * outWidth + x] = value;
       }
     }
     return newArray;
@@ -768,7 +1421,7 @@ function resampleNearest(valueArrays, inWidth, inHeight, outWidth, outHeight) {
 // simple linear interpolation, code from:
 // https://en.wikipedia.org/wiki/Linear_interpolation#Programming_language_support
 function lerp(v0, v1, t) {
-  return ((1 - t) * v0) + (t * v1);
+  return (1 - t) * v0 + t * v1;
 }
 
 /**
@@ -783,37 +1436,84 @@ function lerp(v0, v1, t) {
 function resampleBilinear(valueArrays, inWidth, inHeight, outWidth, outHeight) {
   const relX = inWidth / outWidth;
   const relY = inHeight / outHeight;
-
-  return valueArrays.map((array) => {
+  return valueArrays.map(array => {
     const newArray = copyNewSize(array, outWidth, outHeight);
     for (let y = 0; y < outHeight; ++y) {
       const rawY = relY * y;
-
       const yl = Math.floor(rawY);
-      const yh = Math.min(Math.ceil(rawY), (inHeight - 1));
-
+      const yh = Math.min(Math.ceil(rawY), inHeight - 1);
       for (let x = 0; x < outWidth; ++x) {
         const rawX = relX * x;
         const tx = rawX % 1;
-
         const xl = Math.floor(rawX);
-        const xh = Math.min(Math.ceil(rawX), (inWidth - 1));
-
-        const ll = array[(yl * inWidth) + xl];
-        const hl = array[(yl * inWidth) + xh];
-        const lh = array[(yh * inWidth) + xl];
-        const hh = array[(yh * inWidth) + xh];
-
-        const value = lerp(
-          lerp(ll, hl, tx),
-          lerp(lh, hh, tx),
-          rawY % 1,
-        );
-        newArray[(y * outWidth) + x] = value;
+        const xh = Math.min(Math.ceil(rawX), inWidth - 1);
+        const ll = array[yl * inWidth + xl];
+        const hl = array[yl * inWidth + xh];
+        const lh = array[yh * inWidth + xl];
+        const hh = array[yh * inWidth + xh];
+        const value = lerp(lerp(ll, hl, tx), lerp(lh, hh, tx), rawY % 1);
+        newArray[y * outWidth + x] = value;
       }
     }
     return newArray;
   });
+}
+
+/**
+ * Resample the input arrays using bicubic interpolation.
+ * @param {TypedArray[]} valueArrays The input arrays to resample
+ * @param {number} inWidth The width of the input rasters
+ * @param {number} inHeight The height of the input rasters
+ * @param {number} outWidth The desired width of the output rasters
+ * @param {number} outHeight The desired height of the output rasters
+ * @returns {TypedArray[]} The resampled rasters
+ */
+function resampleBiCubic(valueArrays, inWidth, inHeight, outWidth, outHeight) {
+  const relX = inWidth / outWidth;
+  const relY = inHeight / outHeight;
+  const newArrayLength = outWidth * outHeight;
+  const newArray = new Array(valueArrays.length);
+
+  // Function for bicubic interpolation
+  function cubicInterpolate(p0, p1, p2, p3, x) {
+    return 0.5 * (p0 * (-x + 2 * x * x - x * x * x) + p1 * (2 - 5 * x * x + 3 * x * x * x) + p2 * (x + 4 * x * x - 3 * x * x * x) + p3 * (-x * x + x * x * x));
+  }
+  for (let i = 0; i < valueArrays.length; i++) {
+    const array = valueArrays[i];
+    const resultArray = new array.constructor(newArrayLength);
+    for (let y = 0; y < outHeight; ++y) {
+      for (let x = 0; x < outWidth; ++x) {
+        const targetX = relX * x;
+        const targetY = relY * y;
+        const xFloor = Math.floor(targetX);
+        const yFloor = Math.floor(targetY);
+        const p = new Array(16);
+
+        // Collect 16 neighboring pixels for bicubic interpolation
+        for (let j = 0; j < 4; ++j) {
+          for (let k = 0; k < 4; ++k) {
+            const xIndex = xFloor - 1 + k;
+            const yIndex = yFloor - 1 + j;
+            let pixelValue;
+            if (xIndex >= 0 && xIndex < inWidth && yIndex >= 0 && yIndex < inHeight) {
+              pixelValue = array[yIndex * inWidth + xIndex];
+            } else {
+              pixelValue = 0; // If out of bounds, consider it as 0
+            }
+            p[j * 4 + k] = pixelValue;
+          }
+        }
+
+        // Perform bicubic interpolation
+        const xFraction = targetX - xFloor;
+        const yFraction = targetY - yFloor;
+        const interpolatedValue = cubicInterpolate(cubicInterpolate(p[0], p[1], p[2], p[3], xFraction), cubicInterpolate(p[4], p[5], p[6], p[7], xFraction), cubicInterpolate(p[8], p[9], p[10], p[11], xFraction), cubicInterpolate(p[12], p[13], p[14], p[15], xFraction), yFraction);
+        resultArray[y * outWidth + x] = interpolatedValue;
+      }
+    }
+    newArray[i] = resultArray;
+  }
+  return newArray;
 }
 
 /**
@@ -826,13 +1526,17 @@ function resampleBilinear(valueArrays, inWidth, inHeight, outWidth, outHeight) {
  * @param {string} [method = 'nearest'] The desired resampling method
  * @returns {TypedArray[]} The resampled rasters
  */
-function resample(valueArrays, inWidth, inHeight, outWidth, outHeight, method = 'nearest') {
+function resample(valueArrays, inWidth, inHeight, outWidth, outHeight) {
+  let method = arguments.length > 5 && arguments[5] !== undefined ? arguments[5] : 'nearest';
   switch (method.toLowerCase()) {
     case 'nearest':
       return resampleNearest(valueArrays, inWidth, inHeight, outWidth, outHeight);
     case 'bilinear':
     case 'linear':
       return resampleBilinear(valueArrays, inWidth, inHeight, outWidth, outHeight);
+    case 'bicubic':
+    case 'cubic':
+      return resampleBiCubic(valueArrays, inWidth, inHeight, outWidth, outHeight);
     default:
       throw new Error(`Unsupported resampling method: '${method}'`);
   }
@@ -849,19 +1553,17 @@ function resample(valueArrays, inWidth, inHeight, outWidth, outHeight, method = 
  *                         interleaved data
  * @returns {TypedArray} The resampled raster
  */
-function resampleNearestInterleaved(
-  valueArray, inWidth, inHeight, outWidth, outHeight, samples) {
+function resampleNearestInterleaved(valueArray, inWidth, inHeight, outWidth, outHeight, samples) {
   const relX = inWidth / outWidth;
   const relY = inHeight / outHeight;
-
   const newArray = copyNewSize(valueArray, outWidth, outHeight, samples);
   for (let y = 0; y < outHeight; ++y) {
     const cy = Math.min(Math.round(relY * y), inHeight - 1);
     for (let x = 0; x < outWidth; ++x) {
       const cx = Math.min(Math.round(relX * x), inWidth - 1);
       for (let i = 0; i < samples; ++i) {
-        const value = valueArray[(cy * inWidth * samples) + (cx * samples) + i];
-        newArray[(y * outWidth * samples) + (x * samples) + i] = value;
+        const value = valueArray[cy * inWidth * samples + cx * samples + i];
+        newArray[y * outWidth * samples + x * samples + i] = value;
       }
     }
   }
@@ -879,36 +1581,82 @@ function resampleNearestInterleaved(
  *                         interleaved data
  * @returns {TypedArray} The resampled raster
  */
-function resampleBilinearInterleaved(
-  valueArray, inWidth, inHeight, outWidth, outHeight, samples) {
+function resampleBilinearInterleaved(valueArray, inWidth, inHeight, outWidth, outHeight, samples) {
   const relX = inWidth / outWidth;
   const relY = inHeight / outHeight;
   const newArray = copyNewSize(valueArray, outWidth, outHeight, samples);
   for (let y = 0; y < outHeight; ++y) {
     const rawY = relY * y;
-
     const yl = Math.floor(rawY);
-    const yh = Math.min(Math.ceil(rawY), (inHeight - 1));
-
+    const yh = Math.min(Math.ceil(rawY), inHeight - 1);
     for (let x = 0; x < outWidth; ++x) {
       const rawX = relX * x;
       const tx = rawX % 1;
-
       const xl = Math.floor(rawX);
-      const xh = Math.min(Math.ceil(rawX), (inWidth - 1));
-
+      const xh = Math.min(Math.ceil(rawX), inWidth - 1);
       for (let i = 0; i < samples; ++i) {
-        const ll = valueArray[(yl * inWidth * samples) + (xl * samples) + i];
-        const hl = valueArray[(yl * inWidth * samples) + (xh * samples) + i];
-        const lh = valueArray[(yh * inWidth * samples) + (xl * samples) + i];
-        const hh = valueArray[(yh * inWidth * samples) + (xh * samples) + i];
+        const ll = valueArray[yl * inWidth * samples + xl * samples + i];
+        const hl = valueArray[yl * inWidth * samples + xh * samples + i];
+        const lh = valueArray[yh * inWidth * samples + xl * samples + i];
+        const hh = valueArray[yh * inWidth * samples + xh * samples + i];
+        const value = lerp(lerp(ll, hl, tx), lerp(lh, hh, tx), rawY % 1);
+        newArray[y * outWidth * samples + x * samples + i] = value;
+      }
+    }
+  }
+  return newArray;
+}
+/**
+ * Resample the pixel interleaved input array using bicubic interpolation.
+ * @param {TypedArray} valueArray The input array to resample
+ * @param {number} inWidth The width of the input raster
+ * @param {number} inHeight The height of the input raster
+ * @param {number} outWidth The desired width of the output raster
+ * @param {number} outHeight The desired height of the output raster
+ * @param {number} samples The number of samples per pixel for pixel interleaved data
+ * @returns {TypedArray} The resampled raster
+ */
+function resampleBiCubicInterleaved(valueArray, inWidth, inHeight, outWidth, outHeight, samples) {
+  const relX = inWidth / outWidth;
+  const relY = inHeight / outHeight;
+  const newArrayLength = outWidth * outHeight * samples;
+  const newArray = new valueArray.constructor(newArrayLength);
 
-        const value = lerp(
-          lerp(ll, hl, tx),
-          lerp(lh, hh, tx),
-          rawY % 1,
-        );
-        newArray[(y * outWidth * samples) + (x * samples) + i] = value;
+  // Function for bicubic interpolation
+  function cubicInterpolate(p0, p1, p2, p3, x) {
+    return 0.5 * (p0 * (-x + 2 * x * x - x * x * x) + p1 * (2 - 5 * x * x + 3 * x * x * x) + p2 * (x + 4 * x * x - 3 * x * x * x) + p3 * (-x * x + x * x * x));
+  }
+  for (let y = 0; y < outHeight; ++y) {
+    for (let x = 0; x < outWidth; ++x) {
+      const targetX = relX * x;
+      const targetY = relY * y;
+      const xFloor = Math.floor(targetX);
+      const yFloor = Math.floor(targetY);
+      const p = new Array(16);
+
+      // Collect 16 neighboring pixels for bicubic interpolation
+      for (let j = 0; j < 4; ++j) {
+        for (let k = 0; k < 4; ++k) {
+          const xIndex = xFloor - 1 + k;
+          const yIndex = yFloor - 1 + j;
+          for (let i = 0; i < samples; ++i) {
+            let pixelValue;
+            if (xIndex >= 0 && xIndex < inWidth && yIndex >= 0 && yIndex < inHeight) {
+              pixelValue = valueArray[(yIndex * inWidth + xIndex) * samples + i];
+            } else {
+              pixelValue = 0; // If out of bounds, consider it as 0
+            }
+            p[j * 4 + k] = pixelValue;
+          }
+        }
+      }
+
+      // Perform bicubic interpolation
+      const xFraction = targetX - xFloor;
+      const yFraction = targetY - yFloor;
+      for (let i = 0; i < samples; ++i) {
+        const interpolatedValue = cubicInterpolate(cubicInterpolate(p[0 * samples + i], p[1 * samples + i], p[2 * samples + i], p[3 * samples + i], xFraction), cubicInterpolate(p[4 * samples + i], p[5 * samples + i], p[6 * samples + i], p[7 * samples + i], xFraction), cubicInterpolate(p[8 * samples + i], p[9 * samples + i], p[10 * samples + i], p[11 * samples + i], xFraction), cubicInterpolate(p[12 * samples + i], p[13 * samples + i], p[14 * samples + i], p[15 * samples + i], xFraction), yFraction);
+        newArray[y * outWidth * samples + x * samples + i] = interpolatedValue;
       }
     }
   }
@@ -927,25 +1675,23 @@ function resampleBilinearInterleaved(
  * @param {string} [method = 'nearest'] The desired resampling method
  * @returns {TypedArray} The resampled rasters
  */
-function resampleInterleaved(valueArray, inWidth, inHeight, outWidth, outHeight, samples, method = 'nearest') {
+function resampleInterleaved(valueArray, inWidth, inHeight, outWidth, outHeight, samples) {
+  let method = arguments.length > 6 && arguments[6] !== undefined ? arguments[6] : 'nearest';
   switch (method.toLowerCase()) {
     case 'nearest':
-      return resampleNearestInterleaved(
-        valueArray, inWidth, inHeight, outWidth, outHeight, samples,
-      );
+      return resampleNearestInterleaved(valueArray, inWidth, inHeight, outWidth, outHeight, samples);
     case 'bilinear':
     case 'linear':
-      return resampleBilinearInterleaved(
-        valueArray, inWidth, inHeight, outWidth, outHeight, samples,
-      );
+      return resampleBilinearInterleaved(valueArray, inWidth, inHeight, outWidth, outHeight, samples);
+    case 'bicubic':
+    case 'cubic':
+      return resampleBiCubicInterleaved(valueArray, inWidth, inHeight, outWidth, outHeight, samples);
     default:
       throw new Error(`Unsupported resampling method: '${method}'`);
   }
 }
-
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/geotiffimage.js
+;// CONCATENATED MODULE: ./src_geotiff/geotiffimage.js
 /** @module geotiffimage */
-
 
 
 
@@ -987,10 +1733,10 @@ function sum(array, start, end) {
   }
   return s;
 }
-
 function arrayForType(format, bitsPerSample, size) {
   switch (format) {
-    case 1: // unsigned integer data
+    case 1:
+      // unsigned integer data
       if (bitsPerSample <= 8) {
         return new Uint8Array(size);
       } else if (bitsPerSample <= 16) {
@@ -999,7 +1745,8 @@ function arrayForType(format, bitsPerSample, size) {
         return new Uint32Array(size);
       }
       break;
-    case 2: // twos complement signed integer data
+    case 2:
+      // twos complement signed integer data
       if (bitsPerSample === 8) {
         return new Int8Array(size);
       } else if (bitsPerSample === 16) {
@@ -1008,7 +1755,8 @@ function arrayForType(format, bitsPerSample, size) {
         return new Int32Array(size);
       }
       break;
-    case 3: // floating point data
+    case 3:
+      // floating point data
       switch (bitsPerSample) {
         case 16:
         case 32:
@@ -1024,7 +1772,6 @@ function arrayForType(format, bitsPerSample, size) {
   }
   throw Error('Unsupported data format/bitsPerSample');
 }
-
 function needsNormalization(format, bitsPerSample) {
   if ((format === 1 || format === 2) && bitsPerSample <= 32 && bitsPerSample % 8 === 0) {
     return false;
@@ -1033,21 +1780,17 @@ function needsNormalization(format, bitsPerSample) {
   }
   return true;
 }
-
 function normalizeArray(inBuffer, format, planarConfiguration, samplesPerPixel, bitsPerSample, tileWidth, tileHeight) {
   // const inByteArray = new Uint8Array(inBuffer);
   const view = new DataView(inBuffer);
-  const outSize = planarConfiguration === 2
-    ? tileHeight * tileWidth
-    : tileHeight * tileWidth * samplesPerPixel;
-  const samplesToTransfer = planarConfiguration === 2
-    ? 1 : samplesPerPixel;
+  const outSize = planarConfiguration === 2 ? tileHeight * tileWidth : tileHeight * tileWidth * samplesPerPixel;
+  const samplesToTransfer = planarConfiguration === 2 ? 1 : samplesPerPixel;
   const outArray = arrayForType(format, bitsPerSample, outSize);
   // let pixel = 0;
 
   const bitMask = parseInt('1'.repeat(bitsPerSample), 2);
-
-  if (format === 1) { // unsigned integer
+  if (format === 1) {
+    // unsigned integer
     // translation of https://github.com/OSGeo/gdal/blob/master/gdal/frmts/gtiff/geotiff.cpp#L7337
     let pixelBitSkip;
     // let sampleBitOffset = 0;
@@ -1061,28 +1804,26 @@ function normalizeArray(inBuffer, format, planarConfiguration, samplesPerPixel, 
     // Bits per line rounds up to next byte boundary.
     let bitsPerLine = tileWidth * pixelBitSkip;
     if ((bitsPerLine & 7) !== 0) {
-      bitsPerLine = (bitsPerLine + 7) & (~7);
+      bitsPerLine = bitsPerLine + 7 & ~7;
     }
-
     for (let y = 0; y < tileHeight; ++y) {
       const lineBitOffset = y * bitsPerLine;
       for (let x = 0; x < tileWidth; ++x) {
-        const pixelBitOffset = lineBitOffset + (x * samplesToTransfer * bitsPerSample);
+        const pixelBitOffset = lineBitOffset + x * samplesToTransfer * bitsPerSample;
         for (let i = 0; i < samplesToTransfer; ++i) {
-          const bitOffset = pixelBitOffset + (i * bitsPerSample);
-          const outIndex = (((y * tileWidth) + x) * samplesToTransfer) + i;
-
+          const bitOffset = pixelBitOffset + i * bitsPerSample;
+          const outIndex = (y * tileWidth + x) * samplesToTransfer + i;
           const byteOffset = Math.floor(bitOffset / 8);
           const innerBitOffset = bitOffset % 8;
           if (innerBitOffset + bitsPerSample <= 8) {
-            outArray[outIndex] = (view.getUint8(byteOffset) >> (8 - bitsPerSample) - innerBitOffset) & bitMask;
+            outArray[outIndex] = view.getUint8(byteOffset) >> 8 - bitsPerSample - innerBitOffset & bitMask;
           } else if (innerBitOffset + bitsPerSample <= 16) {
-            outArray[outIndex] = (view.getUint16(byteOffset) >> (16 - bitsPerSample) - innerBitOffset) & bitMask;
+            outArray[outIndex] = view.getUint16(byteOffset) >> 16 - bitsPerSample - innerBitOffset & bitMask;
           } else if (innerBitOffset + bitsPerSample <= 24) {
-            const raw = (view.getUint16(byteOffset) << 8) | (view.getUint8(byteOffset + 2));
-            outArray[outIndex] = (raw >> (24 - bitsPerSample) - innerBitOffset) & bitMask;
+            const raw = view.getUint16(byteOffset) << 8 | view.getUint8(byteOffset + 2);
+            outArray[outIndex] = raw >> 24 - bitsPerSample - innerBitOffset & bitMask;
           } else {
-            outArray[outIndex] = (view.getUint32(byteOffset) >> (32 - bitsPerSample) - innerBitOffset) & bitMask;
+            outArray[outIndex] = view.getUint32(byteOffset) >> 32 - bitsPerSample - innerBitOffset & bitMask;
           }
 
           // let outWord = 0;
@@ -1101,7 +1842,7 @@ function normalizeArray(inBuffer, format, planarConfiguration, samplesPerPixel, 
         // bitOffset = bitOffset + pixelBitSkip - bitsPerSample;
       }
     }
-  } else if (format === 3) { // floating point
+  } else if (format === 3) {// floating point
     // Float16 is handled elsewhere
     // normalize 16/24 bit floats to 32 bit floats in the array
     // console.time();
@@ -1112,7 +1853,6 @@ function normalizeArray(inBuffer, format, planarConfiguration, samplesPerPixel, 
     // }
     // console.timeEnd()
   }
-
   return outArray.buffer;
 }
 
@@ -1137,11 +1877,10 @@ class GeoTIFFImage {
     this.tiles = cache ? {} : null;
     this.isTiled = !fileDirectory.StripOffsets;
     const planarConfiguration = fileDirectory.PlanarConfiguration;
-    this.planarConfiguration = (typeof planarConfiguration === 'undefined') ? 1 : planarConfiguration;
+    this.planarConfiguration = typeof planarConfiguration === 'undefined' ? 1 : planarConfiguration;
     if (this.planarConfiguration !== 1 && this.planarConfiguration !== 2) {
       throw new Error('Invalid planar configuration.');
     }
-
     this.source = source;
   }
 
@@ -1182,8 +1921,7 @@ class GeoTIFFImage {
    * @returns {Number} the number of samples per pixel
    */
   getSamplesPerPixel() {
-    return typeof this.fileDirectory.SamplesPerPixel !== 'undefined'
-      ? this.fileDirectory.SamplesPerPixel : 1;
+    return typeof this.fileDirectory.SamplesPerPixel !== 'undefined' ? this.fileDirectory.SamplesPerPixel : 1;
   }
 
   /**
@@ -1207,16 +1945,14 @@ class GeoTIFFImage {
     }
     return this.getHeight();
   }
-
   getBlockWidth() {
     return this.getTileWidth();
   }
-
   getBlockHeight(y) {
     if (this.isTiled || (y + 1) * this.getTileHeight() <= this.getHeight()) {
       return this.getTileHeight();
     } else {
-      return this.getHeight() - (y * this.getTileHeight());
+      return this.getHeight() - y * this.getTileHeight();
     }
   }
 
@@ -1232,20 +1968,18 @@ class GeoTIFFImage {
     }
     return bytes;
   }
-
   getSampleByteSize(i) {
     if (i >= this.fileDirectory.BitsPerSample.length) {
       throw new RangeError(`Sample index ${i} is out of range.`);
     }
     return Math.ceil(this.fileDirectory.BitsPerSample[i] / 8);
   }
-
   getReaderForSample(sampleIndex) {
-    const format = this.fileDirectory.SampleFormat
-      ? this.fileDirectory.SampleFormat[sampleIndex] : 1;
+    const format = this.fileDirectory.SampleFormat ? this.fileDirectory.SampleFormat[sampleIndex] : 1;
     const bitsPerSample = this.fileDirectory.BitsPerSample[sampleIndex];
     switch (format) {
-      case 1: // unsigned integer data
+      case 1:
+        // unsigned integer data
         if (bitsPerSample <= 8) {
           return DataView.prototype.getUint8;
         } else if (bitsPerSample <= 16) {
@@ -1254,7 +1988,8 @@ class GeoTIFFImage {
           return DataView.prototype.getUint32;
         }
         break;
-      case 2: // twos complement signed integer data
+      case 2:
+        // twos complement signed integer data
         if (bitsPerSample <= 8) {
           return DataView.prototype.getInt8;
         } else if (bitsPerSample <= 16) {
@@ -1282,16 +2017,14 @@ class GeoTIFFImage {
     }
     throw Error('Unsupported data format/bitsPerSample');
   }
-
-  getSampleFormat(sampleIndex = 0) {
-    return this.fileDirectory.SampleFormat
-      ? this.fileDirectory.SampleFormat[sampleIndex] : 1;
+  getSampleFormat() {
+    let sampleIndex = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : 0;
+    return this.fileDirectory.SampleFormat ? this.fileDirectory.SampleFormat[sampleIndex] : 1;
   }
-
-  getBitsPerSample(sampleIndex = 0) {
+  getBitsPerSample() {
+    let sampleIndex = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : 0;
     return this.fileDirectory.BitsPerSample[sampleIndex];
   }
-
   getArrayForSample(sampleIndex, size) {
     const format = this.getSampleFormat(sampleIndex);
     const bitsPerSample = this.getBitsPerSample(sampleIndex);
@@ -1312,13 +2045,14 @@ class GeoTIFFImage {
     const numTilesPerRow = Math.ceil(this.getWidth() / this.getTileWidth());
     const numTilesPerCol = Math.ceil(this.getHeight() / this.getTileHeight());
     let index;
-    const { tiles } = this;
+    const {
+      tiles
+    } = this;
     if (this.planarConfiguration === 1) {
-      index = (y * numTilesPerRow) + x;
+      index = y * numTilesPerRow + x;
     } else if (this.planarConfiguration === 2) {
-      index = (sample * numTilesPerRow * numTilesPerCol) + (y * numTilesPerRow) + x;
+      index = sample * numTilesPerRow * numTilesPerCol + y * numTilesPerRow + x;
     }
-
     let offset;
     let byteCount;
     if (this.isTiled) {
@@ -1328,25 +2062,19 @@ class GeoTIFFImage {
       offset = this.fileDirectory.StripOffsets[index];
       byteCount = this.fileDirectory.StripByteCounts[index];
     }
-    const slice = (await this.source.fetch([{ offset, length: byteCount }], signal))[0];
-
+    const slice = (await this.source.fetch([{
+      offset,
+      length: byteCount
+    }], signal))[0];
     let request;
     if (tiles === null || !tiles[index]) {
-    // resolve each request by potentially applying array normalization
+      // resolve each request by potentially applying array normalization
       request = (async () => {
         let data = await poolOrDecoder.decode(this.fileDirectory, slice);
         const sampleFormat = this.getSampleFormat();
         const bitsPerSample = this.getBitsPerSample();
         if (needsNormalization(sampleFormat, bitsPerSample)) {
-          data = normalizeArray(
-            data,
-            sampleFormat,
-            this.planarConfiguration,
-            this.getSamplesPerPixel(),
-            bitsPerSample,
-            this.getTileWidth(),
-            this.getBlockHeight(y),
-          );
+          data = normalizeArray(data, sampleFormat, this.planarConfiguration, this.getSamplesPerPixel(), bitsPerSample, this.getTileWidth(), this.getBlockHeight(y));
         }
         return data;
       })();
@@ -1361,7 +2089,12 @@ class GeoTIFFImage {
     }
 
     // cache the tile request
-    return { x, y, sample, data: await request };
+    return {
+      x,
+      y,
+      sample,
+      data: await request
+    };
   }
 
   /**
@@ -1379,27 +2112,17 @@ class GeoTIFFImage {
    *                               to be aborted
    * @returns {Promise<ReadRasterResult>}
    */
-  async _readRaster(imageWindow, samples, valueArrays, interleave, poolOrDecoder, width,
-    height, resampleMethod, signal) {
+  async _readRaster(imageWindow, samples, valueArrays, interleave, poolOrDecoder, width, height, resampleMethod, signal) {
     const tileWidth = this.getTileWidth();
     const tileHeight = this.getTileHeight();
     const imageWidth = this.getWidth();
     const imageHeight = this.getHeight();
-
     const minXTile = Math.max(Math.floor(imageWindow[0] / tileWidth), 0);
-    const maxXTile = Math.min(
-      Math.ceil(imageWindow[2] / tileWidth),
-      Math.ceil(imageWidth / tileWidth),
-    );
+    const maxXTile = Math.min(Math.ceil(imageWindow[2] / tileWidth), Math.ceil(imageWidth / tileWidth));
     const minYTile = Math.max(Math.floor(imageWindow[1] / tileHeight), 0);
-    const maxYTile = Math.min(
-      Math.ceil(imageWindow[3] / tileHeight),
-      Math.ceil(imageHeight / tileHeight),
-    );
+    const maxYTile = Math.min(Math.ceil(imageWindow[3] / tileHeight), Math.ceil(imageHeight / tileHeight));
     const windowWidth = imageWindow[2] - imageWindow[0];
-
     let bytesPerPixel = this.getBytesPerPixel();
-
     const srcSampleOffsets = [];
     const sampleReaders = [];
     for (let i = 0; i < samples.length; ++i) {
@@ -1410,10 +2133,10 @@ class GeoTIFFImage {
       }
       sampleReaders.push(this.getReaderForSample(samples[i]));
     }
-
     const promises = [];
-    const { littleEndian } = this;
-
+    const {
+      littleEndian
+    } = this;
     for (let yTile = minYTile; yTile < maxYTile; ++yTile) {
       for (let xTile = minXTile; xTile < maxXTile; ++xTile) {
         let getPromise;
@@ -1427,7 +2150,7 @@ class GeoTIFFImage {
             bytesPerPixel = this.getSampleByteSize(sample);
             getPromise = this.getTileOrStrip(xTile, yTile, sample, poolOrDecoder, signal);
           }
-          const promise = getPromise.then((tile) => {
+          const promise = getPromise.then(tile => {
             const buffer = tile.data;
             const dataView = new DataView(buffer);
             const blockHeight = this.getBlockHeight(tile.y);
@@ -1436,26 +2159,18 @@ class GeoTIFFImage {
             const lastLine = firstLine + blockHeight;
             const lastCol = (tile.x + 1) * tileWidth;
             const reader = sampleReaders[si];
-
             const ymax = Math.min(blockHeight, blockHeight - (lastLine - imageWindow[3]), imageHeight - firstLine);
             const xmax = Math.min(tileWidth, tileWidth - (lastCol - imageWindow[2]), imageWidth - firstCol);
-
             for (let y = Math.max(0, imageWindow[1] - firstLine); y < ymax; ++y) {
               for (let x = Math.max(0, imageWindow[0] - firstCol); x < xmax; ++x) {
-                const pixelOffset = ((y * tileWidth) + x) * bytesPerPixel;
-                const value = reader.call(
-                  dataView, pixelOffset + srcSampleOffsets[si], littleEndian,
-                );
+                const pixelOffset = (y * tileWidth + x) * bytesPerPixel;
+                const value = reader.call(dataView, pixelOffset + srcSampleOffsets[si], littleEndian);
                 let windowCoordinate;
                 if (interleave) {
-                  windowCoordinate = ((y + firstLine - imageWindow[1]) * windowWidth * samples.length)
-                    + ((x + firstCol - imageWindow[0]) * samples.length)
-                    + si;
+                  windowCoordinate = (y + firstLine - imageWindow[1]) * windowWidth * samples.length + (x + firstCol - imageWindow[0]) * samples.length + si;
                   valueArrays[windowCoordinate] = value;
                 } else {
-                  windowCoordinate = (
-                    (y + firstLine - imageWindow[1]) * windowWidth
-                  ) + x + firstCol - imageWindow[0];
+                  windowCoordinate = (y + firstLine - imageWindow[1]) * windowWidth + x + firstCol - imageWindow[0];
                   valueArrays[si][windowCoordinate] = value;
                 }
               }
@@ -1466,36 +2181,19 @@ class GeoTIFFImage {
       }
     }
     await Promise.all(promises);
-
-    if ((width && (imageWindow[2] - imageWindow[0]) !== width)
-        || (height && (imageWindow[3] - imageWindow[1]) !== height)) {
+    if (width && imageWindow[2] - imageWindow[0] !== width || height && imageWindow[3] - imageWindow[1] !== height) {
       let resampled;
       if (interleave) {
-        resampled = resampleInterleaved(
-          valueArrays,
-          imageWindow[2] - imageWindow[0],
-          imageWindow[3] - imageWindow[1],
-          width, height,
-          samples.length,
-          resampleMethod,
-        );
+        resampled = resampleInterleaved(valueArrays, imageWindow[2] - imageWindow[0], imageWindow[3] - imageWindow[1], width, height, samples.length, resampleMethod);
       } else {
-        resampled = resample(
-          valueArrays,
-          imageWindow[2] - imageWindow[0],
-          imageWindow[3] - imageWindow[1],
-          width, height,
-          resampleMethod,
-        );
+        resampled = resample(valueArrays, imageWindow[2] - imageWindow[0], imageWindow[3] - imageWindow[1], width, height, resampleMethod);
       }
       resampled.width = width;
       resampled.height = height;
       return resampled;
     }
-
     valueArrays.width = width || imageWindow[2] - imageWindow[0];
     valueArrays.height = height || imageWindow[3] - imageWindow[1];
-
     return valueArrays;
   }
 
@@ -1508,22 +2206,27 @@ class GeoTIFFImage {
    * @param {ReadRasterOptions} [options={}] optional parameters
    * @returns {Promise<ReadRasterResult>} the decoded arrays as a promise
    */
-  async readRasters({
-    window: wnd, samples = [], interleave, pool = null,
-    width, height, resampleMethod, fillValue, signal,
-  } = {}) {
+  async readRasters() {
+    let {
+      window: wnd,
+      samples = [],
+      interleave,
+      pool = null,
+      width,
+      height,
+      resampleMethod,
+      fillValue,
+      signal
+    } = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
     const imageWindow = wnd || [0, 0, this.getWidth(), this.getHeight()];
 
     // check parameters
     if (imageWindow[0] > imageWindow[2] || imageWindow[1] > imageWindow[3]) {
       throw new Error('Invalid subsets');
     }
-
     const imageWindowWidth = imageWindow[2] - imageWindow[0];
     const imageWindowHeight = imageWindow[3] - imageWindow[1];
-    const numPixels = imageWindowWidth * imageWindowHeight;
     const samplesPerPixel = this.getSamplesPerPixel();
-
     if (!samples || !samples.length) {
       for (let i = 0; i < samplesPerPixel; ++i) {
         samples.push(i);
@@ -1537,8 +2240,7 @@ class GeoTIFFImage {
     }
     let valueArrays;
     if (interleave) {
-      const format = this.fileDirectory.SampleFormat
-        ? Math.max.apply(null, this.fileDirectory.SampleFormat) : 1;
+      const format = this.fileDirectory.SampleFormat ? Math.max.apply(null, this.fileDirectory.SampleFormat) : 1;
       const bitsPerSample = Math.max.apply(null, this.fileDirectory.BitsPerSample);
       valueArrays = arrayForType(format, bitsPerSample, numPixels * samples.length);
       if (fillValue) {
@@ -1556,12 +2258,8 @@ class GeoTIFFImage {
         valueArrays.push(valueArray);
       }
     }
-
-    const poolOrDecoder = pool || await getDecoder(this.fileDirectory);
-
-    const result = await this._readRaster(
-      imageWindow, samples, valueArrays, interleave, poolOrDecoder, width, height, resampleMethod, signal,
-    );
+    const poolOrDecoder = pool || (await (0,compression/* getDecoder */.f)(this.fileDirectory));
+    const result = await this._readRaster(imageWindow, samples, valueArrays, interleave, poolOrDecoder, width, height, resampleMethod, signal);
     return result;
   }
 
@@ -1589,20 +2287,27 @@ class GeoTIFFImage {
    *                                       to be aborted
    * @returns {Promise<ReadRasterResult>} the RGB array as a Promise
    */
-  async readRGB({ window, interleave = true, pool = null, width, height,
-    resampleMethod, enableAlpha = false, signal } = {}) {
+  async readRGB() {
+    let {
+      window,
+      interleave = true,
+      pool = null,
+      width,
+      height,
+      resampleMethod,
+      enableAlpha = false,
+      signal
+    } = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
     const imageWindow = window || [0, 0, this.getWidth(), this.getHeight()];
 
     // check parameters
     if (imageWindow[0] > imageWindow[2] || imageWindow[1] > imageWindow[3]) {
       throw new Error('Invalid subsets');
     }
-
     const pi = this.fileDirectory.PhotometricInterpretation;
-
-    if (pi === globals/* photometricInterpretations */.ub.RGB) {
+    if (pi === globals.photometricInterpretations.RGB) {
       let s = [0, 1, 2];
-      if ((!(this.fileDirectory.ExtraSamples === globals/* ExtraSamplesValues */.AC.Unspecified)) && enableAlpha) {
+      if (!(this.fileDirectory.ExtraSamples === globals.ExtraSamplesValues.Unspecified) && enableAlpha) {
         s = [];
         for (let i = 0; i < this.fileDirectory.BitsPerSample.length; i += 1) {
           s.push(i);
@@ -1616,28 +2321,26 @@ class GeoTIFFImage {
         width,
         height,
         resampleMethod,
-        signal,
+        signal
       });
     }
-
     let samples;
     switch (pi) {
-      case globals/* photometricInterpretations */.ub.WhiteIsZero:
-      case globals/* photometricInterpretations */.ub.BlackIsZero:
-      case globals/* photometricInterpretations */.ub.Palette:
+      case globals.photometricInterpretations.WhiteIsZero:
+      case globals.photometricInterpretations.BlackIsZero:
+      case globals.photometricInterpretations.Palette:
         samples = [0];
         break;
-      case globals/* photometricInterpretations */.ub.CMYK:
+      case globals.photometricInterpretations.CMYK:
         samples = [0, 1, 2, 3];
         break;
-      case globals/* photometricInterpretations */.ub.YCbCr:
-      case globals/* photometricInterpretations */.ub.CIELab:
+      case globals.photometricInterpretations.YCbCr:
+      case globals.photometricInterpretations.CIELab:
         samples = [0, 1, 2];
         break;
       default:
         throw new Error('Invalid or unsupported photometric interpretation.');
     }
-
     const subOptions = {
       window: imageWindow,
       interleave: true,
@@ -1646,30 +2349,31 @@ class GeoTIFFImage {
       width,
       height,
       resampleMethod,
-      signal,
+      signal
     };
-    const { fileDirectory } = this;
+    const {
+      fileDirectory
+    } = this;
     const raster = await this.readRasters(subOptions);
-
     const max = 2 ** this.fileDirectory.BitsPerSample[0];
     let data;
     switch (pi) {
-      case globals/* photometricInterpretations */.ub.WhiteIsZero:
+      case globals.photometricInterpretations.WhiteIsZero:
         data = fromWhiteIsZero(raster, max);
         break;
-      case globals/* photometricInterpretations */.ub.BlackIsZero:
+      case globals.photometricInterpretations.BlackIsZero:
         data = fromBlackIsZero(raster, max);
         break;
-      case globals/* photometricInterpretations */.ub.Palette:
+      case globals.photometricInterpretations.Palette:
         data = fromPalette(raster, fileDirectory.ColorMap);
         break;
-      case globals/* photometricInterpretations */.ub.CMYK:
+      case globals.photometricInterpretations.CMYK:
         data = fromCMYK(raster);
         break;
-      case globals/* photometricInterpretations */.ub.YCbCr:
+      case globals.photometricInterpretations.YCbCr:
         data = fromYCbCr(raster);
         break;
-      case globals/* photometricInterpretations */.ub.CIELab:
+      case globals.photometricInterpretations.CIELab:
         data = fromCIELab(raster);
         break;
       default:
@@ -1689,7 +2393,6 @@ class GeoTIFFImage {
       }
       data = [red, green, blue];
     }
-
     data.width = raster.width;
     data.height = raster.height;
     return data;
@@ -1703,7 +2406,6 @@ class GeoTIFFImage {
     if (!this.fileDirectory.ModelTiepoint) {
       return [];
     }
-
     const tiePoints = [];
     for (let i = 0; i < this.fileDirectory.ModelTiepoint.length; i += 6) {
       tiePoints.push({
@@ -1712,7 +2414,7 @@ class GeoTIFFImage {
         k: this.fileDirectory.ModelTiepoint[i + 2],
         x: this.fileDirectory.ModelTiepoint[i + 3],
         y: this.fileDirectory.ModelTiepoint[i + 4],
-        z: this.fileDirectory.ModelTiepoint[i + 5],
+        z: this.fileDirectory.ModelTiepoint[i + 5]
       });
     }
     return tiePoints;
@@ -1727,24 +2429,22 @@ class GeoTIFFImage {
    * @param {number} [sample=null] The sample index.
    * @returns {Object}
    */
-  getGDALMetadata(sample = null) {
+  getGDALMetadata() {
+    let sample = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : null;
     const metadata = {};
     if (!this.fileDirectory.GDAL_METADATA) {
       return null;
     }
     const string = this.fileDirectory.GDAL_METADATA;
-
-    let items = find_tags_by_name(string, 'Item');
-
+    let items = find_tags_by_name_default()(string, 'Item');
     if (sample === null) {
-      items = items.filter((item) => get_attribute(item, 'sample') === undefined);
+      items = items.filter(item => get_attribute_default()(item, 'sample') === undefined);
     } else {
-      items = items.filter((item) => Number(get_attribute(item, 'sample')) === sample);
+      items = items.filter(item => Number(get_attribute_default()(item, 'sample')) === sample);
     }
-
     for (let i = 0; i < items.length; ++i) {
       const item = items[i];
-      metadata[get_attribute(item, 'name')] = item.inner;
+      metadata[get_attribute_default()(item, 'name')] = item.inner;
     }
     return metadata;
   }
@@ -1770,18 +2470,10 @@ class GeoTIFFImage {
     const tiePoints = this.fileDirectory.ModelTiepoint;
     const modelTransformation = this.fileDirectory.ModelTransformation;
     if (tiePoints && tiePoints.length === 6) {
-      return [
-        tiePoints[3],
-        tiePoints[4],
-        tiePoints[5],
-      ];
+      return [tiePoints[3], tiePoints[4], tiePoints[5]];
     }
     if (modelTransformation) {
-      return [
-        modelTransformation[3],
-        modelTransformation[7],
-        modelTransformation[11],
-      ];
+      return [modelTransformation[3], modelTransformation[7], modelTransformation[11]];
     }
     throw new Error('The image does not have an affine transformation.');
   }
@@ -1794,42 +2486,23 @@ class GeoTIFFImage {
    *                                             required tags on its own.
    * @returns {Array<number>} The resolution as a vector
    */
-  getResolution(referenceImage = null) {
+  getResolution() {
+    let referenceImage = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : null;
     const modelPixelScale = this.fileDirectory.ModelPixelScale;
     const modelTransformation = this.fileDirectory.ModelTransformation;
-
     if (modelPixelScale) {
-      return [
-        modelPixelScale[0],
-        -modelPixelScale[1],
-        modelPixelScale[2],
-      ];
+      return [modelPixelScale[0], -modelPixelScale[1], modelPixelScale[2]];
     }
     if (modelTransformation) {
       if (modelTransformation[1] === 0 && modelTransformation[4] === 0) {
-        return [
-          modelTransformation[0],
-          -modelTransformation[5],
-          modelTransformation[10],
-        ];
+        return [modelTransformation[0], -modelTransformation[5], modelTransformation[10]];
       }
-      return [
-        Math.sqrt((modelTransformation[0] * modelTransformation[0])
-          + (modelTransformation[4] * modelTransformation[4])),
-        -Math.sqrt((modelTransformation[1] * modelTransformation[1])
-          + (modelTransformation[5] * modelTransformation[5])),
-        modelTransformation[10]];
+      return [Math.sqrt(modelTransformation[0] * modelTransformation[0] + modelTransformation[4] * modelTransformation[4]), -Math.sqrt(modelTransformation[1] * modelTransformation[1] + modelTransformation[5] * modelTransformation[5]), modelTransformation[10]];
     }
-
     if (referenceImage) {
       const [refResX, refResY, refResZ] = referenceImage.getResolution();
-      return [
-        refResX * referenceImage.getWidth() / this.getWidth(),
-        refResY * referenceImage.getHeight() / this.getHeight(),
-        refResZ * referenceImage.getWidth() / this.getWidth(),
-      ];
+      return [refResX * referenceImage.getWidth() / this.getWidth(), refResY * referenceImage.getHeight() / this.getHeight(), refResZ * referenceImage.getWidth() / this.getWidth()];
     }
-
     throw new Error('The image does not have an affine transformation.');
   }
 
@@ -1849,91 +2522,57 @@ class GeoTIFFImage {
    *                                   without adjustment for ModelTransformation.
    * @returns {Array<number>} The bounding box
    */
-  getBoundingBox(tilegrid = false) {
+  getBoundingBox() {
+    let tilegrid = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : false;
     const height = this.getHeight();
     const width = this.getWidth();
-
     if (this.fileDirectory.ModelTransformation && !tilegrid) {
       // eslint-disable-next-line no-unused-vars
       const [a, b, c, d, e, f, g, h] = this.fileDirectory.ModelTransformation;
-
-      const corners = [
-        [0, 0],
-        [0, height],
-        [width, 0],
-        [width, height],
-      ];
-
-      const projected = corners.map(([I, J]) => [
-        d + (a * I) + (b * J),
-        h + (e * I) + (f * J),
-      ]);
-
-      const xs = projected.map((pt) => pt[0]);
-      const ys = projected.map((pt) => pt[1]);
-
-      return [
-        Math.min(...xs),
-        Math.min(...ys),
-        Math.max(...xs),
-        Math.max(...ys),
-      ];
+      const corners = [[0, 0], [0, height], [width, 0], [width, height]];
+      const projected = corners.map(_ref => {
+        let [I, J] = _ref;
+        return [d + a * I + b * J, h + e * I + f * J];
+      });
+      const xs = projected.map(pt => pt[0]);
+      const ys = projected.map(pt => pt[1]);
+      return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
     } else {
       const origin = this.getOrigin();
       const resolution = this.getResolution();
-
       const x1 = origin[0];
       const y1 = origin[1];
-
-      const x2 = x1 + (resolution[0] * width);
-      const y2 = y1 + (resolution[1] * height);
-
-      return [
-        Math.min(x1, x2),
-        Math.min(y1, y2),
-        Math.max(x1, x2),
-        Math.max(y1, y2),
-      ];
+      const x2 = x1 + resolution[0] * width;
+      const y2 = y1 + resolution[1] * height;
+      return [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
     }
   }
 }
-
 /* harmony default export */ const geotiffimage = (GeoTIFFImage);
-
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/dataview64.js
-
+;// CONCATENATED MODULE: ./src_geotiff/dataview64.js
 
 class DataView64 {
   constructor(arrayBuffer) {
     this._dataView = new DataView(arrayBuffer);
   }
-
   get buffer() {
     return this._dataView.buffer;
   }
-
   getUint64(offset, littleEndian) {
     const left = this.getUint32(offset, littleEndian);
     const right = this.getUint32(offset + 4, littleEndian);
     let combined;
     if (littleEndian) {
-      combined = left + ((2 ** 32) * right);
+      combined = left + 2 ** 32 * right;
       if (!Number.isSafeInteger(combined)) {
-        throw new Error(
-          `${combined} exceeds MAX_SAFE_INTEGER. `
-          + 'Precision may be lost. Please report if you get this message to https://github.com/geotiffjs/geotiff.js/issues',
-        );
+        throw new Error(`${combined} exceeds MAX_SAFE_INTEGER. ` + 'Precision may be lost. Please report if you get this message to https://github.com/geotiffjs/geotiff.js/issues');
       }
       return combined;
     }
-    combined = ((2 ** 32) * left) + right;
+    combined = 2 ** 32 * left + right;
     if (!Number.isSafeInteger(combined)) {
-      throw new Error(
-        `${combined} exceeds MAX_SAFE_INTEGER. `
-        + 'Precision may be lost. Please report if you get this message to https://github.com/geotiffjs/geotiff.js/issues',
-      );
+      throw new Error(`${combined} exceeds MAX_SAFE_INTEGER. ` + 'Precision may be lost. Please report if you get this message to https://github.com/geotiffjs/geotiff.js/issues');
     }
-
     return combined;
   }
 
@@ -1954,52 +2593,42 @@ class DataView64 {
           byte = ~byte & 0xff;
         }
       }
-      value += byte * (256 ** i);
+      value += byte * 256 ** i;
     }
     if (isNegative) {
       value = -value;
     }
     return value;
   }
-
   getUint8(offset, littleEndian) {
     return this._dataView.getUint8(offset, littleEndian);
   }
-
   getInt8(offset, littleEndian) {
     return this._dataView.getInt8(offset, littleEndian);
   }
-
   getUint16(offset, littleEndian) {
     return this._dataView.getUint16(offset, littleEndian);
   }
-
   getInt16(offset, littleEndian) {
     return this._dataView.getInt16(offset, littleEndian);
   }
-
   getUint32(offset, littleEndian) {
     return this._dataView.getUint32(offset, littleEndian);
   }
-
   getInt32(offset, littleEndian) {
     return this._dataView.getInt32(offset, littleEndian);
   }
-
   getFloat16(offset, littleEndian) {
     return getFloat16(this._dataView, offset, littleEndian);
   }
-
   getFloat32(offset, littleEndian) {
     return this._dataView.getFloat32(offset, littleEndian);
   }
-
   getFloat64(offset, littleEndian) {
     return this._dataView.getFloat64(offset, littleEndian);
   }
 }
-
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/dataslice.js
+;// CONCATENATED MODULE: ./src_geotiff/dataslice.js
 class DataSlice {
   constructor(arrayBuffer, sliceOffset, littleEndian, bigTiff) {
     this._dataView = new DataView(arrayBuffer);
@@ -2007,114 +2636,73 @@ class DataSlice {
     this._littleEndian = littleEndian;
     this._bigTiff = bigTiff;
   }
-
   get sliceOffset() {
     return this._sliceOffset;
   }
-
   get sliceTop() {
     return this._sliceOffset + this.buffer.byteLength;
   }
-
   get littleEndian() {
     return this._littleEndian;
   }
-
   get bigTiff() {
     return this._bigTiff;
   }
-
   get buffer() {
     return this._dataView.buffer;
   }
-
   covers(offset, length) {
     return this.sliceOffset <= offset && this.sliceTop >= offset + length;
   }
-
   readUint8(offset) {
-    return this._dataView.getUint8(
-      offset - this._sliceOffset, this._littleEndian,
-    );
+    return this._dataView.getUint8(offset - this._sliceOffset, this._littleEndian);
   }
-
   readInt8(offset) {
-    return this._dataView.getInt8(
-      offset - this._sliceOffset, this._littleEndian,
-    );
+    return this._dataView.getInt8(offset - this._sliceOffset, this._littleEndian);
   }
-
   readUint16(offset) {
-    return this._dataView.getUint16(
-      offset - this._sliceOffset, this._littleEndian,
-    );
+    return this._dataView.getUint16(offset - this._sliceOffset, this._littleEndian);
   }
-
   readInt16(offset) {
-    return this._dataView.getInt16(
-      offset - this._sliceOffset, this._littleEndian,
-    );
+    return this._dataView.getInt16(offset - this._sliceOffset, this._littleEndian);
   }
-
   readUint32(offset) {
-    return this._dataView.getUint32(
-      offset - this._sliceOffset, this._littleEndian,
-    );
+    return this._dataView.getUint32(offset - this._sliceOffset, this._littleEndian);
   }
-
   readInt32(offset) {
-    return this._dataView.getInt32(
-      offset - this._sliceOffset, this._littleEndian,
-    );
+    return this._dataView.getInt32(offset - this._sliceOffset, this._littleEndian);
   }
-
   readFloat32(offset) {
-    return this._dataView.getFloat32(
-      offset - this._sliceOffset, this._littleEndian,
-    );
+    return this._dataView.getFloat32(offset - this._sliceOffset, this._littleEndian);
   }
-
   readFloat64(offset) {
-    return this._dataView.getFloat64(
-      offset - this._sliceOffset, this._littleEndian,
-    );
+    return this._dataView.getFloat64(offset - this._sliceOffset, this._littleEndian);
   }
-
   readUint64(offset) {
     const left = this.readUint32(offset);
     const right = this.readUint32(offset + 4);
     let combined;
     if (this._littleEndian) {
-      combined = left + ((2 ** 32) * right);
+      combined = left + 2 ** 32 * right;
       if (!Number.isSafeInteger(combined)) {
-        throw new Error(
-          `${combined} exceeds MAX_SAFE_INTEGER. `
-          + 'Precision may be lost. Please report if you get this message to https://github.com/geotiffjs/geotiff.js/issues',
-        );
+        throw new Error(`${combined} exceeds MAX_SAFE_INTEGER. ` + 'Precision may be lost. Please report if you get this message to https://github.com/geotiffjs/geotiff.js/issues');
       }
       return combined;
     }
-    combined = ((2 ** 32) * left) + right;
+    combined = 2 ** 32 * left + right;
     if (!Number.isSafeInteger(combined)) {
-      throw new Error(
-        `${combined} exceeds MAX_SAFE_INTEGER. `
-        + 'Precision may be lost. Please report if you get this message to https://github.com/geotiffjs/geotiff.js/issues',
-      );
+      throw new Error(`${combined} exceeds MAX_SAFE_INTEGER. ` + 'Precision may be lost. Please report if you get this message to https://github.com/geotiffjs/geotiff.js/issues');
     }
-
     return combined;
   }
 
   // adapted from https://stackoverflow.com/a/55338384/8060591
   readInt64(offset) {
     let value = 0;
-    const isNegative = (this._dataView.getUint8(offset + (this._littleEndian ? 7 : 0)) & 0x80)
-      > 0;
+    const isNegative = (this._dataView.getUint8(offset + (this._littleEndian ? 7 : 0)) & 0x80) > 0;
     let carrying = true;
     for (let i = 0; i < 8; i++) {
-      let byte = this._dataView.getUint8(
-        offset + (this._littleEndian ? i : 7 - i),
-      );
+      let byte = this._dataView.getUint8(offset + (this._littleEndian ? i : 7 - i));
       if (isNegative) {
         if (carrying) {
           if (byte !== 0x00) {
@@ -2125,14 +2713,13 @@ class DataSlice {
           byte = ~byte & 0xff;
         }
       }
-      value += byte * (256 ** i);
+      value += byte * 256 ** i;
     }
     if (isNegative) {
       value = -value;
     }
     return value;
   }
-
   readOffset(offset) {
     if (this._bigTiff) {
       return this.readUint64(offset);
@@ -2140,8 +2727,112 @@ class DataSlice {
     return this.readUint32(offset);
   }
 }
+;// CONCATENATED MODULE: ./src_geotiff/pool.js
 
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/source/httputils.js
+const defaultPoolSize = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 2 : 2;
+
+/**
+ * @module pool
+ */
+
+/**
+ * Pool for workers to decode chunks of the images.
+ */
+class Pool {
+  /**
+   * @constructor
+   * @param {Number} [size] The size of the pool. Defaults to the number of CPUs
+   *                      available. When this parameter is `null` or 0, then the
+   *                      decoding will be done in the main thread.
+   * @param {function(): Worker} [createWorker] A function that creates the decoder worker.
+   * Defaults to a worker with all decoders that ship with geotiff.js. The `createWorker()`
+   * function is expected to return a `Worker` compatible with Web Workers. For code that
+   * runs in Node, [web-worker](https://www.npmjs.com/package/web-worker) is a good choice.
+   *
+   * A worker that uses a custom lzw decoder would look like this `my-custom-worker.js` file:
+   * ```js
+   * import { addDecoder, getDecoder } from 'geotiff';
+   * addDecoder(5, () => import ('./my-custom-lzw').then((m) => m.default));
+   * self.addEventListener('message', async (e) => {
+   *   const { id, fileDirectory, buffer } = e.data;
+   *   const decoder = await getDecoder(fileDirectory);
+   *   const decoded = await decoder.decode(fileDirectory, buffer);
+   *   self.postMessage({ decoded, id }, [decoded]);
+   * });
+   * ```
+   * The way the above code is built into a worker by the `createWorker()` function
+   * depends on the used bundler. For most bundlers, something like this will work:
+   * ```js
+   * function createWorker() {
+   *   return new Worker(new URL('./my-custom-worker.js', import.meta.url));
+   * }
+   * ```
+   */
+  constructor() {
+    let size = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : defaultPoolSize;
+    let createWorker = arguments.length > 1 ? arguments[1] : undefined;
+    this.workers = null;
+    this._awaitingDecoder = null;
+    this.size = size;
+    this.messageId = 0;
+    if (size) {
+      this._awaitingDecoder = createWorker ? Promise.resolve(createWorker) : new Promise(resolve => {
+        __webpack_require__.e(/* import() */ 578).then(__webpack_require__.bind(__webpack_require__, 9578)).then(module => {
+          resolve(module.create);
+        });
+      });
+      this._awaitingDecoder.then(create => {
+        this._awaitingDecoder = null;
+        this.workers = [];
+        for (let i = 0; i < size; i++) {
+          this.workers.push({
+            worker: create(),
+            idle: true
+          });
+        }
+      });
+    }
+  }
+
+  /**
+   * Decode the given block of bytes with the set compression method.
+   * @param {ArrayBuffer} buffer the array buffer of bytes to decode.
+   * @returns {Promise<ArrayBuffer>} the decoded result as a `Promise`
+   */
+  async decode(fileDirectory, buffer) {
+    if (this._awaitingDecoder) {
+      await this._awaitingDecoder;
+    }
+    return this.size === 0 ? (0,compression/* getDecoder */.f)(fileDirectory).then(decoder => decoder.decode(fileDirectory, buffer)) : new Promise(resolve => {
+      const worker = this.workers.find(candidate => candidate.idle) || this.workers[Math.floor(Math.random() * this.size)];
+      worker.idle = false;
+      const id = this.messageId++;
+      const onMessage = e => {
+        if (e.data.id === id) {
+          worker.idle = true;
+          resolve(e.data.decoded);
+          worker.worker.removeEventListener('message', onMessage);
+        }
+      };
+      worker.worker.addEventListener('message', onMessage);
+      worker.worker.postMessage({
+        fileDirectory,
+        buffer,
+        id
+      }, [buffer]);
+    });
+  }
+  destroy() {
+    if (this.workers) {
+      this.workers.forEach(worker => {
+        worker.worker.terminate();
+      });
+      this.workers = null;
+    }
+  }
+}
+/* harmony default export */ const pool = (Pool);
+;// CONCATENATED MODULE: ./src_geotiff/source/httputils.js
 const CRLFCRLF = '\r\n\r\n';
 
 /*
@@ -2164,14 +2855,11 @@ function itemsToObject(items) {
  * @returns {Object} the parsed headers with lowercase keys
  */
 function parseHeaders(text) {
-  const items = text
-    .split('\r\n')
-    .map((line) => {
-      const kv = line.split(':').map((str) => str.trim());
-      kv[0] = kv[0].toLowerCase();
-      return kv;
-    });
-
+  const items = text.split('\r\n').map(line => {
+    const kv = line.split(':').map(str => str.trim());
+    kv[0] = kv[0].toLowerCase();
+    return kv;
+  });
   return itemsToObject(items);
 }
 
@@ -2181,9 +2869,12 @@ function parseHeaders(text) {
  * @returns {Object} the parsed content type with the fields: type and params
  */
 function parseContentType(rawContentType) {
-  const [type, ...rawParams] = rawContentType.split(';').map((s) => s.trim());
-  const paramsItems = rawParams.map((param) => param.split('='));
-  return { type, params: itemsToObject(paramsItems) };
+  const [type, ...rawParams] = rawContentType.split(';').map(s => s.trim());
+  const paramsItems = rawParams.map(param => param.split('='));
+  return {
+    type,
+    params: itemsToObject(paramsItems)
+  };
 }
 
 /**
@@ -2195,15 +2886,17 @@ function parseContentRange(rawContentRange) {
   let start;
   let end;
   let total;
-
   if (rawContentRange) {
     [, start, end, total] = rawContentRange.match(/bytes (\d+)-(\d+)\/(\d+)/);
     start = parseInt(start, 10);
     end = parseInt(end, 10);
     total = parseInt(total, 10);
   }
-
-  return { start, end, total };
+  return {
+    start,
+    end,
+    total
+  };
 }
 
 /**
@@ -2221,31 +2914,22 @@ function parseByteRanges(responseArrayBuffer, boundary) {
   let offset = null;
   const decoder = new TextDecoder('ascii');
   const out = [];
-
   const startBoundary = `--${boundary}`;
   const endBoundary = `${startBoundary}--`;
 
   // search for the initial boundary, may be offset by some bytes
   // TODO: more efficient to check for `--` in bytes directly
   for (let i = 0; i < 10; ++i) {
-    const text = decoder.decode(
-      new Uint8Array(responseArrayBuffer, i, startBoundary.length),
-    );
+    const text = decoder.decode(new Uint8Array(responseArrayBuffer, i, startBoundary.length));
     if (text === startBoundary) {
       offset = i;
     }
   }
-
   if (offset === null) {
     throw new Error('Could not find initial boundary');
   }
-
   while (offset < responseArrayBuffer.byteLength) {
-    const text = decoder.decode(
-      new Uint8Array(responseArrayBuffer, offset,
-        Math.min(startBoundary.length + 1024, responseArrayBuffer.byteLength - offset),
-      ),
-    );
+    const text = decoder.decode(new Uint8Array(responseArrayBuffer, offset, Math.min(startBoundary.length + 1024, responseArrayBuffer.byteLength - offset)));
 
     // break if we arrived at the end
     if (text.length === 0 || text.startsWith(endBoundary)) {
@@ -2259,7 +2943,6 @@ function parseByteRanges(responseArrayBuffer, boundary) {
 
     // get a substring from where we read the headers
     const innerText = text.substr(startBoundary.length + 2);
-
     if (innerText.length === 0) {
       break;
     }
@@ -2269,7 +2952,11 @@ function parseByteRanges(responseArrayBuffer, boundary) {
 
     // parse the headers to get the content range size
     const headers = parseHeaders(innerText.substr(0, endOfHeaders));
-    const { start, end, total } = parseContentRange(headers['content-range']);
+    const {
+      start,
+      end,
+      total
+    } = parseContentRange(headers['content-range']);
 
     // calculate the length of the slice and the next offset
     const startOfData = offset + startBoundary.length + endOfHeaders + CRLFCRLF.length;
@@ -2279,16 +2966,13 @@ function parseByteRanges(responseArrayBuffer, boundary) {
       data: responseArrayBuffer.slice(startOfData, startOfData + length),
       offset: start,
       length,
-      fileSize: total,
+      fileSize: total
     });
-
     offset = startOfData + length + 4;
   }
-
   return out;
 }
-
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/source/basesource.js
+;// CONCATENATED MODULE: ./src_geotiff/source/basesource.js
 /**
  * @typedef Slice
  * @property {number} offset
@@ -2301,10 +2985,9 @@ class BaseSource {
    * @param {Slice[]} slices
    * @returns {ArrayBuffer[]}
    */
-  async fetch(slices, signal = undefined) {
-    return Promise.all(
-      slices.map((slice) => this.fetchSlice(slice, signal)),
-    );
+  async fetch(slices) {
+    let signal = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : undefined;
+    return Promise.all(slices.map(slice => this.fetchSlice(slice, signal)));
   }
 
   /**
@@ -2322,14 +3005,19 @@ class BaseSource {
   get fileSize() {
     return null;
   }
-
   async close() {
     // no-op by default
   }
 }
-
 ;// CONCATENATED MODULE: ./node_modules/quick-lru/index.js
 class QuickLRU extends Map {
+	#size = 0;
+	#cache = new Map();
+	#oldCache = new Map();
+	#maxSize;
+	#maxAge;
+	#onEviction;
+
 	constructor(options = {}) {
 		super();
 
@@ -2341,30 +3029,30 @@ class QuickLRU extends Map {
 			throw new TypeError('`maxAge` must be a number greater than 0');
 		}
 
-		// TODO: Use private class fields when ESLint supports them.
-		this.maxSize = options.maxSize;
-		this.maxAge = options.maxAge || Number.POSITIVE_INFINITY;
-		this.onEviction = options.onEviction;
-		this.cache = new Map();
-		this.oldCache = new Map();
-		this._size = 0;
+		this.#maxSize = options.maxSize;
+		this.#maxAge = options.maxAge || Number.POSITIVE_INFINITY;
+		this.#onEviction = options.onEviction;
 	}
 
-	// TODO: Use private class methods when targeting Node.js 16.
-	_emitEvictions(cache) {
-		if (typeof this.onEviction !== 'function') {
+	// For tests.
+	get __oldCache() {
+		return this.#oldCache;
+	}
+
+	#emitEvictions(cache) {
+		if (typeof this.#onEviction !== 'function') {
 			return;
 		}
 
 		for (const [key, item] of cache) {
-			this.onEviction(key, item.value);
+			this.#onEviction(key, item.value);
 		}
 	}
 
-	_deleteIfExpired(key, item) {
+	#deleteIfExpired(key, item) {
 		if (typeof item.expiry === 'number' && item.expiry <= Date.now()) {
-			if (typeof this.onEviction === 'function') {
-				this.onEviction(key, item.value);
+			if (typeof this.#onEviction === 'function') {
+				this.#onEviction(key, item.value);
 			}
 
 			return this.delete(key);
@@ -2373,54 +3061,54 @@ class QuickLRU extends Map {
 		return false;
 	}
 
-	_getOrDeleteIfExpired(key, item) {
-		const deleted = this._deleteIfExpired(key, item);
+	#getOrDeleteIfExpired(key, item) {
+		const deleted = this.#deleteIfExpired(key, item);
 		if (deleted === false) {
 			return item.value;
 		}
 	}
 
-	_getItemValue(key, item) {
-		return item.expiry ? this._getOrDeleteIfExpired(key, item) : item.value;
+	#getItemValue(key, item) {
+		return item.expiry ? this.#getOrDeleteIfExpired(key, item) : item.value;
 	}
 
-	_peek(key, cache) {
+	#peek(key, cache) {
 		const item = cache.get(key);
 
-		return this._getItemValue(key, item);
+		return this.#getItemValue(key, item);
 	}
 
-	_set(key, value) {
-		this.cache.set(key, value);
-		this._size++;
+	#set(key, value) {
+		this.#cache.set(key, value);
+		this.#size++;
 
-		if (this._size >= this.maxSize) {
-			this._size = 0;
-			this._emitEvictions(this.oldCache);
-			this.oldCache = this.cache;
-			this.cache = new Map();
+		if (this.#size >= this.#maxSize) {
+			this.#size = 0;
+			this.#emitEvictions(this.#oldCache);
+			this.#oldCache = this.#cache;
+			this.#cache = new Map();
 		}
 	}
 
-	_moveToRecent(key, item) {
-		this.oldCache.delete(key);
-		this._set(key, item);
+	#moveToRecent(key, item) {
+		this.#oldCache.delete(key);
+		this.#set(key, item);
 	}
 
-	* _entriesAscending() {
-		for (const item of this.oldCache) {
+	* #entriesAscending() {
+		for (const item of this.#oldCache) {
 			const [key, value] = item;
-			if (!this.cache.has(key)) {
-				const deleted = this._deleteIfExpired(key, value);
+			if (!this.#cache.has(key)) {
+				const deleted = this.#deleteIfExpired(key, value);
 				if (deleted === false) {
 					yield item;
 				}
 			}
 		}
 
-		for (const item of this.cache) {
+		for (const item of this.#cache) {
 			const [key, value] = item;
-			const deleted = this._deleteIfExpired(key, value);
+			const deleted = this.#deleteIfExpired(key, value);
 			if (deleted === false) {
 				yield item;
 			}
@@ -2428,73 +3116,72 @@ class QuickLRU extends Map {
 	}
 
 	get(key) {
-		if (this.cache.has(key)) {
-			const item = this.cache.get(key);
-
-			return this._getItemValue(key, item);
+		if (this.#cache.has(key)) {
+			const item = this.#cache.get(key);
+			return this.#getItemValue(key, item);
 		}
 
-		if (this.oldCache.has(key)) {
-			const item = this.oldCache.get(key);
-			if (this._deleteIfExpired(key, item) === false) {
-				this._moveToRecent(key, item);
+		if (this.#oldCache.has(key)) {
+			const item = this.#oldCache.get(key);
+			if (this.#deleteIfExpired(key, item) === false) {
+				this.#moveToRecent(key, item);
 				return item.value;
 			}
 		}
 	}
 
-	set(key, value, {maxAge = this.maxAge} = {}) {
-		const expiry =
-			typeof maxAge === 'number' && maxAge !== Number.POSITIVE_INFINITY ?
-				Date.now() + maxAge :
-				undefined;
-		if (this.cache.has(key)) {
-			this.cache.set(key, {
+	set(key, value, {maxAge = this.#maxAge} = {}) {
+		const expiry = typeof maxAge === 'number' && maxAge !== Number.POSITIVE_INFINITY
+			? (Date.now() + maxAge)
+			: undefined;
+
+		if (this.#cache.has(key)) {
+			this.#cache.set(key, {
 				value,
-				expiry
+				expiry,
 			});
 		} else {
-			this._set(key, {value, expiry});
+			this.#set(key, {value, expiry});
 		}
 
 		return this;
 	}
 
 	has(key) {
-		if (this.cache.has(key)) {
-			return !this._deleteIfExpired(key, this.cache.get(key));
+		if (this.#cache.has(key)) {
+			return !this.#deleteIfExpired(key, this.#cache.get(key));
 		}
 
-		if (this.oldCache.has(key)) {
-			return !this._deleteIfExpired(key, this.oldCache.get(key));
+		if (this.#oldCache.has(key)) {
+			return !this.#deleteIfExpired(key, this.#oldCache.get(key));
 		}
 
 		return false;
 	}
 
 	peek(key) {
-		if (this.cache.has(key)) {
-			return this._peek(key, this.cache);
+		if (this.#cache.has(key)) {
+			return this.#peek(key, this.#cache);
 		}
 
-		if (this.oldCache.has(key)) {
-			return this._peek(key, this.oldCache);
+		if (this.#oldCache.has(key)) {
+			return this.#peek(key, this.#oldCache);
 		}
 	}
 
 	delete(key) {
-		const deleted = this.cache.delete(key);
+		const deleted = this.#cache.delete(key);
 		if (deleted) {
-			this._size--;
+			this.#size--;
 		}
 
-		return this.oldCache.delete(key) || deleted;
+		return this.#oldCache.delete(key) || deleted;
 	}
 
 	clear() {
-		this.cache.clear();
-		this.oldCache.clear();
-		this._size = 0;
+		this.#cache.clear();
+		this.#oldCache.clear();
+		this.#size = 0;
 	}
 
 	resize(newSize) {
@@ -2502,23 +3189,23 @@ class QuickLRU extends Map {
 			throw new TypeError('`maxSize` must be a number greater than 0');
 		}
 
-		const items = [...this._entriesAscending()];
+		const items = [...this.#entriesAscending()];
 		const removeCount = items.length - newSize;
 		if (removeCount < 0) {
-			this.cache = new Map(items);
-			this.oldCache = new Map();
-			this._size = items.length;
+			this.#cache = new Map(items);
+			this.#oldCache = new Map();
+			this.#size = items.length;
 		} else {
 			if (removeCount > 0) {
-				this._emitEvictions(items.slice(0, removeCount));
+				this.#emitEvictions(items.slice(0, removeCount));
 			}
 
-			this.oldCache = new Map(items.slice(removeCount));
-			this.cache = new Map();
-			this._size = 0;
+			this.#oldCache = new Map(items.slice(removeCount));
+			this.#cache = new Map();
+			this.#size = 0;
 		}
 
-		this.maxSize = newSize;
+		this.#maxSize = newSize;
 	}
 
 	* keys() {
@@ -2534,18 +3221,18 @@ class QuickLRU extends Map {
 	}
 
 	* [Symbol.iterator]() {
-		for (const item of this.cache) {
+		for (const item of this.#cache) {
 			const [key, value] = item;
-			const deleted = this._deleteIfExpired(key, value);
+			const deleted = this.#deleteIfExpired(key, value);
 			if (deleted === false) {
 				yield [key, value.value];
 			}
 		}
 
-		for (const item of this.oldCache) {
+		for (const item of this.#oldCache) {
 			const [key, value] = item;
-			if (!this.cache.has(key)) {
-				const deleted = this._deleteIfExpired(key, value);
+			if (!this.#cache.has(key)) {
+				const deleted = this.#deleteIfExpired(key, value);
 				if (deleted === false) {
 					yield [key, value.value];
 				}
@@ -2554,22 +3241,22 @@ class QuickLRU extends Map {
 	}
 
 	* entriesDescending() {
-		let items = [...this.cache];
+		let items = [...this.#cache];
 		for (let i = items.length - 1; i >= 0; --i) {
 			const item = items[i];
 			const [key, value] = item;
-			const deleted = this._deleteIfExpired(key, value);
+			const deleted = this.#deleteIfExpired(key, value);
 			if (deleted === false) {
 				yield [key, value.value];
 			}
 		}
 
-		items = [...this.oldCache];
+		items = [...this.#oldCache];
 		for (let i = items.length - 1; i >= 0; --i) {
 			const item = items[i];
 			const [key, value] = item;
-			if (!this.cache.has(key)) {
-				const deleted = this._deleteIfExpired(key, value);
+			if (!this.#cache.has(key)) {
+				const deleted = this.#deleteIfExpired(key, value);
 				if (deleted === false) {
 					yield [key, value.value];
 				}
@@ -2578,24 +3265,28 @@ class QuickLRU extends Map {
 	}
 
 	* entriesAscending() {
-		for (const [key, value] of this._entriesAscending()) {
+		for (const [key, value] of this.#entriesAscending()) {
 			yield [key, value.value];
 		}
 	}
 
 	get size() {
-		if (!this._size) {
-			return this.oldCache.size;
+		if (!this.#size) {
+			return this.#oldCache.size;
 		}
 
 		let oldCacheSize = 0;
-		for (const key of this.oldCache.keys()) {
-			if (!this.cache.has(key)) {
+		for (const key of this.#oldCache.keys()) {
+			if (!this.#cache.has(key)) {
 				oldCacheSize++;
 			}
 		}
 
-		return Math.min(this._size + oldCacheSize, this.maxSize);
+		return Math.min(this.#size + oldCacheSize, this.#maxSize);
+	}
+
+	get maxSize() {
+		return this.#maxSize;
 	}
 
 	entries() {
@@ -2613,7 +3304,7 @@ class QuickLRU extends Map {
 	}
 }
 
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/utils.js
+;// CONCATENATED MODULE: ./src_geotiff/utils.js
 function utils_assign(target, source) {
   for (const key in source) {
     if (source.hasOwnProperty(key)) {
@@ -2621,7 +3312,6 @@ function utils_assign(target, source) {
     }
   }
 }
-
 function chunk(iterable, length) {
   const results = [];
   const lengthOfIterable = iterable.length;
@@ -2634,7 +3324,6 @@ function chunk(iterable, length) {
   }
   return results;
 }
-
 function endsWith(string, expectedEnding) {
   if (string.length < expectedEnding.length) {
     return false;
@@ -2642,14 +3331,14 @@ function endsWith(string, expectedEnding) {
   const actualEnding = string.substr(string.length - expectedEnding.length);
   return actualEnding === expectedEnding;
 }
-
 function forEach(iterable, func) {
-  const { length } = iterable;
+  const {
+    length
+  } = iterable;
   for (let i = 0; i < length; i++) {
     func(iterable[i], i);
   }
 }
-
 function invert(oldObj) {
   const newObj = {};
   for (const key in oldObj) {
@@ -2660,7 +3349,6 @@ function invert(oldObj) {
   }
   return newObj;
 }
-
 function range(n) {
   const results = [];
   for (let i = 0; i < n; i++) {
@@ -2668,7 +3356,6 @@ function range(n) {
   }
   return results;
 }
-
 function times(numTimes, func) {
   const results = [];
   for (let i = 0; i < numTimes; i++) {
@@ -2676,16 +3363,16 @@ function times(numTimes, func) {
   }
   return results;
 }
-
 function toArray(iterable) {
   const results = [];
-  const { length } = iterable;
+  const {
+    length
+  } = iterable;
   for (let i = 0; i < length; i++) {
     results.push(iterable[i]);
   }
   return results;
 }
-
 function toArrayRecursively(input) {
   if (input.length) {
     return toArray(input).map(toArrayRecursively);
@@ -2698,12 +3385,10 @@ function utils_parseContentRange(headerValue) {
   if (!headerValue) {
     return null;
   }
-
   if (typeof headerValue !== 'string') {
     throw new Error('invalid argument');
   }
-
-  const parseInt = (number) => Number.parseInt(number, 10);
+  const parseInt = number => Number.parseInt(number, 10);
 
   // Check for presence of unit
   let matches = headerValue.match(/^(\w*) /);
@@ -2716,7 +3401,7 @@ function utils_parseContentRange(headerValue) {
       unit,
       first: parseInt(matches[1]),
       last: parseInt(matches[2]),
-      length: matches[3] === '*' ? null : parseInt(matches[3]),
+      length: matches[3] === '*' ? null : parseInt(matches[3])
     };
   }
 
@@ -2727,10 +3412,9 @@ function utils_parseContentRange(headerValue) {
       unit,
       first: null,
       last: null,
-      length: matches[1] === '*' ? null : parseInt(matches[1]),
+      length: matches[1] === '*' ? null : parseInt(matches[1])
     };
   }
-
   return null;
 }
 
@@ -2738,9 +3422,8 @@ function utils_parseContentRange(headerValue) {
  * Promisified wrapper around 'setTimeout' to allow 'await'
  */
 async function wait(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
-
 function zip(a, b) {
   const A = Array.isArray(a) ? a : Array.from(a);
   const B = Array.isArray(b) ? b : Array.from(b);
@@ -2757,11 +3440,9 @@ class AbortError extends Error {
     if (Error.captureStackTrace) {
       Error.captureStackTrace(this, AbortError);
     }
-
     this.name = 'AbortError';
   }
 }
-
 class CustomAggregateError extends Error {
   constructor(errors, message) {
     super(message);
@@ -2770,11 +3451,8 @@ class CustomAggregateError extends Error {
     this.name = 'AggregateError';
   }
 }
-
 const AggregateError = CustomAggregateError;
-
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/source/blockedsource.js
-
+;// CONCATENATED MODULE: ./src_geotiff/source/blockedsource.js
 
 
 
@@ -2785,7 +3463,8 @@ class Block {
    * @param {number} length
    * @param {ArrayBuffer} [data]
    */
-  constructor(offset, length, data = null) {
+  constructor(offset, length) {
+    let data = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : null;
     this.offset = offset;
     this.length = length;
     this.data = data;
@@ -2798,7 +3477,6 @@ class Block {
     return this.offset + this.length;
   }
 }
-
 class BlockGroup {
   /**
    *
@@ -2812,7 +3490,6 @@ class BlockGroup {
     this.blockIds = blockIds;
   }
 }
-
 class BlockedSource extends BaseSource {
   /**
    *
@@ -2821,16 +3498,19 @@ class BlockedSource extends BaseSource {
    * @param {number} [options.blockSize]
    * @param {number} [options.cacheSize]
    */
-  constructor(source, { blockSize = 65536, cacheSize = 100 } = {}) {
+  constructor(source) {
+    let {
+      blockSize = 65536,
+      cacheSize = 100
+    } = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
     super();
     this.source = source;
     this.blockSize = blockSize;
-
     this.blockCache = new QuickLRU({
       maxSize: cacheSize,
       onEviction: (blockId, block) => {
         this.evictedBlocks.set(blockId, block);
-      },
+      }
     });
 
     /** @type {Map<number, Block>} */
@@ -2841,10 +3521,8 @@ class BlockedSource extends BaseSource {
 
     // set of blockIds missing for the current requests
     this.blockIdsToFetch = new Set();
-
     this.abortedBlockIds = new Set();
   }
-
   get fileSize() {
     return this.source.fileSize;
   }
@@ -2858,17 +3536,18 @@ class BlockedSource extends BaseSource {
     const missingBlockIds = [];
     const allBlockIds = [];
     this.evictedBlocks.clear();
-
-    for (const { offset, length } of slices) {
+    for (const {
+      offset,
+      length
+    } of slices) {
       let top = offset + length;
-
-      const { fileSize } = this;
+      const {
+        fileSize
+      } = this;
       if (fileSize !== null) {
         top = Math.min(top, fileSize);
       }
-
       const firstBlockOffset = Math.floor(offset / this.blockSize) * this.blockSize;
-
       for (let current = firstBlockOffset; current < top; current += this.blockSize) {
         const blockId = Math.floor(current / this.blockSize);
         if (!this.blockCache.has(blockId) && !this.blockRequests.has(blockId)) {
@@ -2902,9 +3581,8 @@ class BlockedSource extends BaseSource {
 
     // Perform retries if a block was interrupted by a previous signal
     const abortedBlockRequests = [];
-    const abortedBlockIds = allBlockIds
-      .filter((id) => this.abortedBlockIds.has(id) || !this.blockCache.has(id));
-    abortedBlockIds.forEach((id) => this.blockIdsToFetch.add(id));
+    const abortedBlockIds = allBlockIds.filter(id => this.abortedBlockIds.has(id) || !this.blockCache.has(id));
+    abortedBlockIds.forEach(id => this.blockIdsToFetch.add(id));
     // start the retry of some blocks if required
     if (abortedBlockIds.length > 0 && signal && !signal.aborted) {
       this.fetchBlocks(null);
@@ -2922,9 +3600,8 @@ class BlockedSource extends BaseSource {
     if (signal && signal.aborted) {
       throw new AbortError('Request was aborted');
     }
-
-    const blocks = allBlockIds.map((id) => this.blockCache.get(id) || this.evictedBlocks.get(id));
-    const failedBlocks = blocks.filter((i) => !i);
+    const blocks = allBlockIds.map(id => this.blockCache.get(id) || this.evictedBlocks.get(id));
+    const failedBlocks = blocks.filter(i => !i);
     if (failedBlocks.length) {
       throw new AggregateError(failedBlocks, 'Request failed');
     }
@@ -2947,10 +3624,8 @@ class BlockedSource extends BaseSource {
 
       // start requesting slices of data
       const groupRequests = this.source.fetch(groups, signal);
-
       for (let groupIndex = 0; groupIndex < groups.length; ++groupIndex) {
         const group = groups[groupIndex];
-
         for (const blockId of group.blockIds) {
           // make an async IIFE for each block
           this.blockRequests.set(blockId, (async () => {
@@ -2960,12 +3635,7 @@ class BlockedSource extends BaseSource {
               const o = blockOffset - response.offset;
               const t = Math.min(o + this.blockSize, response.data.byteLength);
               const data = response.data.slice(o, t);
-              const block = new Block(
-                blockOffset,
-                data.byteLength,
-                data,
-                blockId,
-              );
+              const block = new Block(blockOffset, data.byteLength, data, blockId);
               this.blockCache.set(blockId, block);
               this.abortedBlockIds.delete(blockId);
             } catch (err) {
@@ -3001,28 +3671,17 @@ class BlockedSource extends BaseSource {
     let current = [];
     let lastBlockId = null;
     const groups = [];
-
     for (const blockId of sortedBlockIds) {
       if (lastBlockId === null || lastBlockId + 1 === blockId) {
         current.push(blockId);
         lastBlockId = blockId;
       } else {
-        groups.push(new BlockGroup(
-          current[0] * this.blockSize,
-          current.length * this.blockSize,
-          current,
-        ));
+        groups.push(new BlockGroup(current[0] * this.blockSize, current.length * this.blockSize, current));
         current = [blockId];
         lastBlockId = blockId;
       }
     }
-
-    groups.push(new BlockGroup(
-      current[0] * this.blockSize,
-      current.length * this.blockSize,
-      current,
-    ));
-
+    groups.push(new BlockGroup(current[0] * this.blockSize, current.length * this.blockSize, current));
     return groups;
   }
 
@@ -3032,7 +3691,7 @@ class BlockedSource extends BaseSource {
    * @param {Map} blocks
    */
   readSliceData(slices, blocks) {
-    return slices.map((slice) => {
+    return slices.map(slice => {
       let top = slice.offset + slice.length;
       if (this.fileSize !== null) {
         top = Math.min(this.fileSize, top);
@@ -3041,7 +3700,6 @@ class BlockedSource extends BaseSource {
       const blockIdHigh = Math.floor(top / this.blockSize);
       const sliceData = new ArrayBuffer(slice.length);
       const sliceView = new Uint8Array(sliceData);
-
       for (let blockId = blockIdLow; blockId <= blockIdHigh; ++blockId) {
         const block = blocks.get(blockId);
         const delta = block.offset - slice.offset;
@@ -3049,29 +3707,24 @@ class BlockedSource extends BaseSource {
         let blockInnerOffset = 0;
         let rangeInnerOffset = 0;
         let usedBlockLength;
-
         if (delta < 0) {
           blockInnerOffset = -delta;
         } else if (delta > 0) {
           rangeInnerOffset = delta;
         }
-
         if (topDelta < 0) {
           usedBlockLength = block.length - blockInnerOffset;
         } else {
           usedBlockLength = top - block.offset - blockInnerOffset;
         }
-
         const blockView = new Uint8Array(block.data, blockInnerOffset, usedBlockLength);
         sliceView.set(blockView, rangeInnerOffset);
       }
-
       return sliceData;
     });
   }
 }
-
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/source/client/base.js
+;// CONCATENATED MODULE: ./src_geotiff/source/client/base.js
 class BaseResponse {
   /**
    * Returns whether the response has an ok'ish status code
@@ -3092,7 +3745,8 @@ class BaseResponse {
    * @param {string} headerName the header name
    * @returns {string} the header value
    */
-  getHeader(headerName) { // eslint-disable-line no-unused-vars
+  getHeader(headerName) {
+    // eslint-disable-line no-unused-vars
     throw new Error('not implemented');
   }
 
@@ -3103,7 +3757,6 @@ class BaseResponse {
     throw new Error('not implemented');
   }
 }
-
 class BaseClient {
   constructor(url) {
     this.url = url;
@@ -3114,13 +3767,16 @@ class BaseClient {
    * @param {{headers: HeadersInit, signal: AbortSignal}} [options={}]
    * @returns {Promise<BaseResponse>}
    */
-  async request({ headers, signal } = {}) { // eslint-disable-line no-unused-vars
+  async request() {
+    let {
+      headers,
+      signal
+    } = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
+    // eslint-disable-line no-unused-vars
     throw new Error('request is not implemented');
   }
 }
-
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/source/client/fetch.js
-
+;// CONCATENATED MODULE: ./src_geotiff/source/client/fetch.js
 
 class FetchResponse extends BaseResponse {
   /**
@@ -3131,23 +3787,17 @@ class FetchResponse extends BaseResponse {
     super();
     this.response = response;
   }
-
   get status() {
     return this.response.status;
   }
-
   getHeader(name) {
     return this.response.headers.get(name);
   }
-
   async getData() {
-    const data = this.response.arrayBuffer
-      ? await this.response.arrayBuffer()
-      : (await this.response.buffer()).buffer;
+    const data = this.response.arrayBuffer ? await this.response.arrayBuffer() : (await this.response.buffer()).buffer;
     return data;
   }
 }
-
 class FetchClient extends BaseClient {
   constructor(url, credentials) {
     super(url);
@@ -3158,16 +3808,20 @@ class FetchClient extends BaseClient {
    * @param {{headers: HeadersInit, signal: AbortSignal}} [options={}]
    * @returns {Promise<FetchResponse>}
    */
-  async request({ headers, signal } = {}) {
+  async request() {
+    let {
+      headers,
+      signal
+    } = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
     const response = await fetch(this.url, {
-      headers, credentials: this.credentials, signal,
+      headers,
+      credentials: this.credentials,
+      signal
     });
     return new FetchResponse(response);
   }
 }
-
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/source/client/xhr.js
-
+;// CONCATENATED MODULE: ./src_geotiff/source/client/xhr.js
 
 
 class XHRResponse extends BaseResponse {
@@ -3181,20 +3835,16 @@ class XHRResponse extends BaseResponse {
     this.xhr = xhr;
     this.data = data;
   }
-
   get status() {
     return this.xhr.status;
   }
-
   getHeader(name) {
     return this.xhr.getResponseHeader(name);
   }
-
   async getData() {
     return this.data;
   }
 }
-
 class XHRClient extends BaseClient {
   constructRequest(headers, signal) {
     return new Promise((resolve, reject) => {
@@ -3213,7 +3863,6 @@ class XHRClient extends BaseClient {
       xhr.onerror = reject;
       xhr.onabort = () => reject(new AbortError('Request aborted'));
       xhr.send();
-
       if (signal) {
         if (signal.aborted) {
           xhr.abort();
@@ -3222,22 +3871,24 @@ class XHRClient extends BaseClient {
       }
     });
   }
-
-  async request({ headers, signal } = {}) {
+  async request() {
+    let {
+      headers,
+      signal
+    } = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
     const response = await this.constructRequest(headers, signal);
     return response;
   }
 }
-
 // EXTERNAL MODULE: http (ignored)
-var http_ignored_ = __webpack_require__(8625);
+var http_ignored_ = __webpack_require__(1677);
+var http_ignored_default = /*#__PURE__*/__webpack_require__.n(http_ignored_);
 // EXTERNAL MODULE: https (ignored)
-var https_ignored_ = __webpack_require__(6504);
-// EXTERNAL MODULE: url (ignored)
-var url_ignored_ = __webpack_require__(6580);
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/source/client/http.js
-
-
+var https_ignored_ = __webpack_require__(76);
+var https_ignored_default = /*#__PURE__*/__webpack_require__.n(https_ignored_);
+// EXTERNAL MODULE: ./node_modules/url/url.js
+var url_url = __webpack_require__(8835);
+;// CONCATENATED MODULE: ./src_geotiff/source/client/http.js
 
 
 
@@ -3253,56 +3904,47 @@ class HttpResponse extends BaseResponse {
     this.response = response;
     this.dataPromise = dataPromise;
   }
-
   get status() {
     return this.response.statusCode;
   }
-
   getHeader(name) {
     return this.response.headers[name];
   }
-
   async getData() {
     const data = await this.dataPromise;
     return data;
   }
 }
-
 class HttpClient extends BaseClient {
   constructor(url) {
     super(url);
-    this.parsedUrl = url_ignored_.parse(this.url);
-    this.httpApi = (this.parsedUrl.protocol === 'http:' ? http_ignored_ : https_ignored_);
+    this.parsedUrl = url_url.parse(this.url);
+    this.httpApi = this.parsedUrl.protocol === 'http:' ? (http_ignored_default()) : (https_ignored_default());
   }
-
   constructRequest(headers, signal) {
     return new Promise((resolve, reject) => {
-      const request = this.httpApi.get(
-        {
-          ...this.parsedUrl,
-          headers,
-        },
-        (response) => {
-          const dataPromise = new Promise((resolveData) => {
-            const chunks = [];
+      const request = this.httpApi.get({
+        ...this.parsedUrl,
+        headers
+      }, response => {
+        const dataPromise = new Promise(resolveData => {
+          const chunks = [];
 
-            // collect chunks
-            response.on('data', (chunk) => {
-              chunks.push(chunk);
-            });
-
-            // concatenate all chunks and resolve the promise with the resulting buffer
-            response.on('end', () => {
-              const data = Buffer.concat(chunks).buffer;
-              resolveData(data);
-            });
-            response.on('error', reject);
+          // collect chunks
+          response.on('data', chunk => {
+            chunks.push(chunk);
           });
-          resolve(new HttpResponse(response, dataPromise));
-        },
-      );
-      request.on('error', reject);
 
+          // concatenate all chunks and resolve the promise with the resulting buffer
+          response.on('end', () => {
+            const data = Buffer.concat(chunks).buffer;
+            resolveData(data);
+          });
+          response.on('error', reject);
+        });
+        resolve(new HttpResponse(response, dataPromise));
+      });
+      request.on('error', reject);
       if (signal) {
         if (signal.aborted) {
           request.destroy(new AbortError('Request aborted'));
@@ -3311,16 +3953,16 @@ class HttpClient extends BaseClient {
       }
     });
   }
-
-  async request({ headers, signal } = {}) {
+  async request() {
+    let {
+      headers,
+      signal
+    } = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
     const response = await this.constructRequest(headers, signal);
     return response;
   }
 }
-
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/source/remote.js
-
-
+;// CONCATENATED MODULE: ./src_geotiff/source/remote.js
 
 
 
@@ -3366,50 +4008,53 @@ class RemoteSource extends BaseSource {
     }
 
     // otherwise make a single request for each slice
-    return Promise.all(
-      slices.map((slice) => this.fetchSlice(slice, signal)),
-    );
+    return Promise.all(slices.map(slice => this.fetchSlice(slice, signal)));
   }
-
   async fetchSlices(slices, signal) {
     const response = await this.client.request({
       headers: {
         ...this.headers,
-        Range: `bytes=${slices
-          .map(({ offset, length }) => `${offset}-${offset + length}`)
-          .join(',')
-        }`,
+        Range: `bytes=${slices.map(_ref => {
+          let {
+            offset,
+            length
+          } = _ref;
+          return `${offset}-${offset + length}`;
+        }).join(',')}`
       },
-      signal,
+      signal
     });
-
     if (!response.ok) {
       throw new Error('Error fetching data.');
     } else if (response.status === 206) {
-      const { type, params } = parseContentType(response.getHeader('content-type'));
+      const {
+        type,
+        params
+      } = parseContentType(response.getHeader('content-type'));
       if (type === 'multipart/byteranges') {
         const byteRanges = parseByteRanges(await response.getData(), params.boundary);
         this._fileSize = byteRanges[0].fileSize || null;
         return byteRanges;
       }
-
       const data = await response.getData();
-
-      const { start, end, total } = parseContentRange(response.getHeader('content-range'));
+      const {
+        start,
+        end,
+        total
+      } = parseContentRange(response.getHeader('content-range'));
       this._fileSize = total || null;
       const first = [{
         data,
         offset: start,
-        length: end - start,
+        length: end - start
       }];
-
       if (slices.length > 1) {
         // we requested more than one slice, but got only the first
         // unfortunately, some HTTP Servers don't support multi-ranges
         // and return only the first
 
         // get the rest of the slices and fetch them iteratively
-        const others = await Promise.all(slices.slice(1).map((slice) => this.fetchSlice(slice, signal)));
+        const others = await Promise.all(slices.slice(1).map(slice => this.fetchSlice(slice, signal)));
         return first.concat(others);
       }
       return first;
@@ -3422,19 +4067,21 @@ class RemoteSource extends BaseSource {
       return [{
         data,
         offset: 0,
-        length: data.byteLength,
+        length: data.byteLength
       }];
     }
   }
-
   async fetchSlice(slice, signal) {
-    const { offset, length } = slice;
+    const {
+      offset,
+      length
+    } = slice;
     const response = await this.client.request({
       headers: {
         ...this.headers,
-        Range: `bytes=${offset}-${offset + length}`,
+        Range: `bytes=${offset}-${offset + length}`
       },
-      signal,
+      signal
     });
 
     // check the response was okay and if the server actually understands range requests
@@ -3442,61 +4089,86 @@ class RemoteSource extends BaseSource {
       throw new Error('Error fetching data.');
     } else if (response.status === 206) {
       const data = await response.getData();
-
-      const { total } = parseContentRange(response.getHeader('content-range'));
+      const {
+        total
+      } = parseContentRange(response.getHeader('content-range'));
       this._fileSize = total || null;
       return {
         data,
         offset,
-        length,
+        length
       };
     } else {
       if (!this.allowFullFile) {
         throw new Error('Server responded with full file');
       }
-
       const data = await response.getData();
-
       this._fileSize = data.byteLength;
       return {
         data,
         offset: 0,
-        length: data.byteLength,
+        length: data.byteLength
       };
     }
   }
-
   get fileSize() {
     return this._fileSize;
   }
 }
-
-function maybeWrapInBlockedSource(source, { blockSize, cacheSize }) {
+function maybeWrapInBlockedSource(source, _ref2) {
+  let {
+    blockSize,
+    cacheSize
+  } = _ref2;
   if (blockSize === null) {
     return source;
   }
-  return new BlockedSource(source, { blockSize, cacheSize });
+  return new BlockedSource(source, {
+    blockSize,
+    cacheSize
+  });
 }
-
-function makeFetchSource(url, { headers = {}, credentials, maxRanges = 0, allowFullFile = false, ...blockOptions } = {}) {
+function makeFetchSource(url) {
+  let {
+    headers = {},
+    credentials,
+    maxRanges = 0,
+    allowFullFile = false,
+    ...blockOptions
+  } = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
   const client = new FetchClient(url, credentials);
   const source = new RemoteSource(client, headers, maxRanges, allowFullFile);
   return maybeWrapInBlockedSource(source, blockOptions);
 }
-
-function makeXHRSource(url, { headers = {}, maxRanges = 0, allowFullFile = false, ...blockOptions } = {}) {
+function makeXHRSource(url) {
+  let {
+    headers = {},
+    maxRanges = 0,
+    allowFullFile = false,
+    ...blockOptions
+  } = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
   const client = new XHRClient(url);
   const source = new RemoteSource(client, headers, maxRanges, allowFullFile);
   return maybeWrapInBlockedSource(source, blockOptions);
 }
-
-function makeHttpSource(url, { headers = {}, maxRanges = 0, allowFullFile = false, ...blockOptions } = {}) {
+function makeHttpSource(url) {
+  let {
+    headers = {},
+    maxRanges = 0,
+    allowFullFile = false,
+    ...blockOptions
+  } = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
   const client = new HttpClient(url);
   const source = new RemoteSource(client, headers, maxRanges, allowFullFile);
   return maybeWrapInBlockedSource(source, blockOptions);
 }
-
-function remote_makeCustomSource(client, { headers = {}, maxRanges = 0, allowFullFile = false, ...blockOptions } = {}) {
+function makeCustomSource(client) {
+  let {
+    headers = {},
+    maxRanges = 0,
+    allowFullFile = false,
+    ...blockOptions
+  } = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
   const source = new RemoteSource(client, headers, maxRanges, allowFullFile);
   return maybeWrapInBlockedSource(source, blockOptions);
 }
@@ -3506,7 +4178,11 @@ function remote_makeCustomSource(client, { headers = {}, maxRanges = 0, allowFul
  * @param {string} url
  * @param {object} options
  */
-function makeRemoteSource(url, { forceXHR = false, ...clientOptions } = {}) {
+function makeRemoteSource(url) {
+  let {
+    forceXHR = false,
+    ...clientOptions
+  } = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
   if (typeof fetch === 'function' && !forceXHR) {
     return makeFetchSource(url, clientOptions);
   }
@@ -3515,9 +4191,7 @@ function makeRemoteSource(url, { forceXHR = false, ...clientOptions } = {}) {
   }
   return makeHttpSource(url, clientOptions);
 }
-
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/source/arraybuffer.js
-
+;// CONCATENATED MODULE: ./src_geotiff/source/arraybuffer.js
 
 
 class ArrayBufferSource extends BaseSource {
@@ -3525,7 +4199,6 @@ class ArrayBufferSource extends BaseSource {
     super();
     this.arrayBuffer = arrayBuffer;
   }
-
   fetchSlice(slice, signal) {
     if (signal && signal.aborted) {
       throw new AbortError('Request aborted');
@@ -3533,29 +4206,24 @@ class ArrayBufferSource extends BaseSource {
     return this.arrayBuffer.slice(slice.offset, slice.offset + slice.length);
   }
 }
-
 function makeBufferSource(arrayBuffer) {
   return new ArrayBufferSource(arrayBuffer);
 }
-
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/source/filereader.js
-
+;// CONCATENATED MODULE: ./src_geotiff/source/filereader.js
 
 class FileReaderSource extends BaseSource {
   constructor(file) {
     super();
     this.file = file;
   }
-
   async fetchSlice(slice, signal) {
     return new Promise((resolve, reject) => {
       const blob = this.file.slice(slice.offset, slice.offset + slice.length);
       const reader = new FileReader();
-      reader.onload = (event) => resolve(event.target.result);
+      reader.onload = event => resolve(event.target.result);
       reader.onerror = reject;
       reader.onabort = reject;
       reader.readAsArrayBuffer(blob);
-
       if (signal) {
         signal.addEventListener('abort', () => reader.abort());
       }
@@ -3571,12 +4239,507 @@ class FileReaderSource extends BaseSource {
 function makeFileReaderSource(file) {
   return new FileReaderSource(file);
 }
+// EXTERNAL MODULE: fs (ignored)
+var fs_ignored_ = __webpack_require__(5248);
+var fs_ignored_default = /*#__PURE__*/__webpack_require__.n(fs_ignored_);
+;// CONCATENATED MODULE: ./src_geotiff/source/file.js
 
-;// CONCATENATED MODULE: ./node_modules/geotiff/dist-module/geotiff.js
+
+function closeAsync(fd) {
+  return new Promise((resolve, reject) => {
+    fs_ignored_default().close(fd, err => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+function openAsync(path, flags) {
+  let mode = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : undefined;
+  return new Promise((resolve, reject) => {
+    fs_ignored_default().open(path, flags, mode, (err, fd) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve(fd);
+      }
+    });
+  });
+}
+function readAsync() {
+  for (var _len = arguments.length, args = new Array(_len), _key = 0; _key < _len; _key++) {
+    args[_key] = arguments[_key];
+  }
+  return new Promise((resolve, reject) => {
+    fs_ignored_default().read(...args, (err, bytesRead, buffer) => {
+      if (err) {
+        reject(err);
+      } else {
+        resolve({
+          bytesRead,
+          buffer
+        });
+      }
+    });
+  });
+}
+class FileSource extends BaseSource {
+  constructor(path) {
+    super();
+    this.path = path;
+    this.openRequest = openAsync(path, 'r');
+  }
+  async fetchSlice(slice) {
+    // TODO: use `signal`
+    const fd = await this.openRequest;
+    const {
+      buffer
+    } = await readAsync(fd, Buffer.alloc(slice.length), 0, slice.length, slice.offset);
+    return buffer.buffer;
+  }
+  async close() {
+    const fd = await this.openRequest;
+    await closeAsync(fd);
+  }
+}
+function makeFileSource(path) {
+  return new FileSource(path);
+}
+;// CONCATENATED MODULE: ./src_geotiff/geotiffwriter.js
+/*
+  Some parts of this file are based on UTIF.js,
+  which was released under the MIT License.
+  You can view that here:
+  https://github.com/photopea/UTIF.js/blob/master/LICENSE
+*/
+
+
+const tagName2Code = invert(globals.fieldTagNames);
+const geoKeyName2Code = invert(globals.geoKeyNames);
+const name2code = {};
+utils_assign(name2code, tagName2Code);
+utils_assign(name2code, geoKeyName2Code);
+const typeName2byte = invert(globals.fieldTypeNames);
+
+// config variables
+const numBytesInIfd = 1000;
+const _binBE = {
+  nextZero: (data, o) => {
+    let oincr = o;
+    while (data[oincr] !== 0) {
+      oincr++;
+    }
+    return oincr;
+  },
+  readUshort: (buff, p) => {
+    return buff[p] << 8 | buff[p + 1];
+  },
+  readShort: (buff, p) => {
+    const a = _binBE.ui8;
+    a[0] = buff[p + 1];
+    a[1] = buff[p + 0];
+    return _binBE.i16[0];
+  },
+  readInt: (buff, p) => {
+    const a = _binBE.ui8;
+    a[0] = buff[p + 3];
+    a[1] = buff[p + 2];
+    a[2] = buff[p + 1];
+    a[3] = buff[p + 0];
+    return _binBE.i32[0];
+  },
+  readUint: (buff, p) => {
+    const a = _binBE.ui8;
+    a[0] = buff[p + 3];
+    a[1] = buff[p + 2];
+    a[2] = buff[p + 1];
+    a[3] = buff[p + 0];
+    return _binBE.ui32[0];
+  },
+  readASCII: (buff, p, l) => {
+    return l.map(i => String.fromCharCode(buff[p + i])).join('');
+  },
+  readFloat: (buff, p) => {
+    const a = _binBE.ui8;
+    times(4, i => {
+      a[i] = buff[p + 3 - i];
+    });
+    return _binBE.fl32[0];
+  },
+  readDouble: (buff, p) => {
+    const a = _binBE.ui8;
+    times(8, i => {
+      a[i] = buff[p + 7 - i];
+    });
+    return _binBE.fl64[0];
+  },
+  writeUshort: (buff, p, n) => {
+    buff[p] = n >> 8 & 255;
+    buff[p + 1] = n & 255;
+  },
+  writeUint: (buff, p, n) => {
+    buff[p] = n >> 24 & 255;
+    buff[p + 1] = n >> 16 & 255;
+    buff[p + 2] = n >> 8 & 255;
+    buff[p + 3] = n >> 0 & 255;
+  },
+  writeASCII: (buff, p, s) => {
+    times(s.length, i => {
+      buff[p + i] = s.charCodeAt(i);
+    });
+  },
+  ui8: new Uint8Array(8)
+};
+_binBE.fl64 = new Float64Array(_binBE.ui8.buffer);
+_binBE.writeDouble = (buff, p, n) => {
+  _binBE.fl64[0] = n;
+  times(8, i => {
+    buff[p + i] = _binBE.ui8[7 - i];
+  });
+};
+const _writeIFD = (bin, data, _offset, ifd) => {
+  let offset = _offset;
+  const keys = Object.keys(ifd).filter(key => {
+    return key !== undefined && key !== null && key !== 'undefined';
+  });
+  bin.writeUshort(data, offset, keys.length);
+  offset += 2;
+  let eoff = offset + 12 * keys.length + 4;
+  for (const key of keys) {
+    let tag = null;
+    if (typeof key === 'number') {
+      tag = key;
+    } else if (typeof key === 'string') {
+      tag = parseInt(key, 10);
+    }
+    const typeName = globals.fieldTagTypes[tag];
+    const typeNum = typeName2byte[typeName];
+    if (typeName == null || typeName === undefined || typeof typeName === 'undefined') {
+      throw new Error(`unknown type of tag: ${tag}`);
+    }
+    let val = ifd[key];
+    if (val === undefined) {
+      throw new Error(`failed to get value for key ${key}`);
+    }
+
+    // ASCIIZ format with trailing 0 character
+    // http://www.fileformat.info/format/tiff/corion.htm
+    // https://stackoverflow.com/questions/7783044/whats-the-difference-between-asciiz-vs-ascii
+    if (typeName === 'ASCII' && typeof val === 'string' && endsWith(val, '\u0000') === false) {
+      val += '\u0000';
+    }
+    const num = val.length;
+    bin.writeUshort(data, offset, tag);
+    offset += 2;
+    bin.writeUshort(data, offset, typeNum);
+    offset += 2;
+    bin.writeUint(data, offset, num);
+    offset += 4;
+    let dlen = [-1, 1, 1, 2, 4, 8, 0, 0, 0, 0, 0, 0, 8][typeNum] * num;
+    let toff = offset;
+    if (dlen > 4) {
+      bin.writeUint(data, offset, eoff);
+      toff = eoff;
+    }
+    if (typeName === 'ASCII') {
+      bin.writeASCII(data, toff, val);
+    } else if (typeName === 'SHORT') {
+      times(num, i => {
+        bin.writeUshort(data, toff + 2 * i, val[i]);
+      });
+    } else if (typeName === 'LONG') {
+      times(num, i => {
+        bin.writeUint(data, toff + 4 * i, val[i]);
+      });
+    } else if (typeName === 'RATIONAL') {
+      times(num, i => {
+        bin.writeUint(data, toff + 8 * i, Math.round(val[i] * 10000));
+        bin.writeUint(data, toff + 8 * i + 4, 10000);
+      });
+    } else if (typeName === 'DOUBLE') {
+      times(num, i => {
+        bin.writeDouble(data, toff + 8 * i, val[i]);
+      });
+    }
+    if (dlen > 4) {
+      dlen += dlen & 1;
+      eoff += dlen;
+    }
+    offset += 4;
+  }
+  return [offset, eoff];
+};
+const encodeIfds = ifds => {
+  const data = new Uint8Array(numBytesInIfd);
+  let offset = 4;
+  const bin = _binBE;
+
+  // set big-endian byte-order
+  // https://en.wikipedia.org/wiki/TIFF#Byte_order
+  data[0] = 77;
+  data[1] = 77;
+
+  // set format-version number
+  // https://en.wikipedia.org/wiki/TIFF#Byte_order
+  data[3] = 42;
+  let ifdo = 8;
+  bin.writeUint(data, offset, ifdo);
+  offset += 4;
+  ifds.forEach((ifd, i) => {
+    const noffs = _writeIFD(bin, data, ifdo, ifd);
+    ifdo = noffs[1];
+    if (i < ifds.length - 1) {
+      bin.writeUint(data, noffs[0], ifdo);
+    }
+  });
+  if (data.slice) {
+    return data.slice(0, ifdo).buffer;
+  }
+
+  // node hasn't implemented slice on Uint8Array yet
+  const result = new Uint8Array(ifdo);
+  for (let i = 0; i < ifdo; i++) {
+    result[i] = data[i];
+  }
+  return result.buffer;
+};
+const encodeImage = (values, width, height, metadata) => {
+  if (height === undefined || height === null) {
+    throw new Error(`you passed into encodeImage a width of type ${height}`);
+  }
+  if (width === undefined || width === null) {
+    throw new Error(`you passed into encodeImage a width of type ${width}`);
+  }
+  const ifd = {
+    256: [width],
+    // ImageWidth
+    257: [height],
+    // ImageLength
+    273: [numBytesInIfd],
+    // strips offset
+    278: [height],
+    // RowsPerStrip
+    305: 'geotiff.js' // no array for ASCII(Z)
+  };
+  if (metadata) {
+    for (const i in metadata) {
+      if (metadata.hasOwnProperty(i)) {
+        ifd[i] = metadata[i];
+      }
+    }
+  }
+  const prfx = new Uint8Array(encodeIfds([ifd]));
+  const img = new Uint8Array(values);
+  const samplesPerPixel = ifd[277];
+  const data = new Uint8Array(numBytesInIfd + width * height * samplesPerPixel);
+  times(prfx.length, i => {
+    data[i] = prfx[i];
+  });
+  forEach(img, (value, i) => {
+    data[numBytesInIfd + i] = value;
+  });
+  return data.buffer;
+};
+const convertToTids = input => {
+  const result = {};
+  for (const key in input) {
+    if (key !== 'StripOffsets') {
+      if (!name2code[key]) {
+        console.error(key, 'not in name2code:', Object.keys(name2code));
+      }
+      result[name2code[key]] = input[key];
+    }
+  }
+  return result;
+};
+const geotiffwriter_toArray = input => {
+  if (Array.isArray(input)) {
+    return input;
+  }
+  return [input];
+};
+const metadataDefaults = [['Compression', 1],
+// no compression
+['PlanarConfiguration', 1], ['ExtraSamples', 0]];
+function writeGeotiff(data, metadata) {
+  const isFlattened = typeof data[0] === 'number';
+  let height;
+  let numBands;
+  let width;
+  let flattenedValues;
+  if (isFlattened) {
+    height = metadata.height || metadata.ImageLength;
+    width = metadata.width || metadata.ImageWidth;
+    numBands = data.length / (height * width);
+    flattenedValues = data;
+  } else {
+    numBands = data.length;
+    height = data[0].length;
+    width = data[0][0].length;
+    flattenedValues = [];
+    times(height, rowIndex => {
+      times(width, columnIndex => {
+        times(numBands, bandIndex => {
+          flattenedValues.push(data[bandIndex][rowIndex][columnIndex]);
+        });
+      });
+    });
+  }
+  metadata.ImageLength = height;
+  delete metadata.height;
+  metadata.ImageWidth = width;
+  delete metadata.width;
+
+  // consult https://www.loc.gov/preservation/digital/formats/content/tiff_tags.shtml
+
+  if (!metadata.BitsPerSample) {
+    metadata.BitsPerSample = times(numBands, () => 8);
+  }
+  metadataDefaults.forEach(tag => {
+    const key = tag[0];
+    if (!metadata[key]) {
+      const value = tag[1];
+      metadata[key] = value;
+    }
+  });
+
+  // The color space of the image data.
+  // 1=black is zero and 2=RGB.
+  if (!metadata.PhotometricInterpretation) {
+    metadata.PhotometricInterpretation = metadata.BitsPerSample.length === 3 ? 2 : 1;
+  }
+
+  // The number of components per pixel.
+  if (!metadata.SamplesPerPixel) {
+    metadata.SamplesPerPixel = [numBands];
+  }
+  if (!metadata.StripByteCounts) {
+    // we are only writing one strip
+    metadata.StripByteCounts = [numBands * height * width];
+  }
+  if (!metadata.ModelPixelScale) {
+    // assumes raster takes up exactly the whole globe
+    metadata.ModelPixelScale = [360 / width, 180 / height, 0];
+  }
+  if (!metadata.SampleFormat) {
+    metadata.SampleFormat = times(numBands, () => 1);
+  }
+
+  // if didn't pass in projection information, assume the popular 4326 "geographic projection"
+  if (!metadata.hasOwnProperty('GeographicTypeGeoKey') && !metadata.hasOwnProperty('ProjectedCSTypeGeoKey')) {
+    metadata.GeographicTypeGeoKey = 4326;
+    metadata.ModelTiepoint = [0, 0, 0, -180, 90, 0]; // raster fits whole globe
+    metadata.GeogCitationGeoKey = 'WGS 84';
+    metadata.GTModelTypeGeoKey = 2;
+  }
+  const geoKeys = Object.keys(metadata).filter(key => endsWith(key, 'GeoKey')).sort((a, b) => name2code[a] - name2code[b]);
+  if (!metadata.GeoAsciiParams) {
+    let geoAsciiParams = '';
+    geoKeys.forEach(name => {
+      const code = Number(name2code[name]);
+      const tagType = globals.fieldTagTypes[code];
+      if (tagType === 'ASCII') {
+        geoAsciiParams += `${metadata[name].toString()}\u0000`;
+      }
+    });
+    if (geoAsciiParams.length > 0) {
+      metadata.GeoAsciiParams = geoAsciiParams;
+    }
+  }
+  if (!metadata.GeoKeyDirectory) {
+    const NumberOfKeys = geoKeys.length;
+    const GeoKeyDirectory = [1, 1, 0, NumberOfKeys];
+    geoKeys.forEach(geoKey => {
+      const KeyID = Number(name2code[geoKey]);
+      GeoKeyDirectory.push(KeyID);
+      let Count;
+      let TIFFTagLocation;
+      let valueOffset;
+      if (globals.fieldTagTypes[KeyID] === 'SHORT') {
+        Count = 1;
+        TIFFTagLocation = 0;
+        valueOffset = metadata[geoKey];
+      } else if (geoKey === 'GeogCitationGeoKey') {
+        Count = metadata.GeoAsciiParams.length;
+        TIFFTagLocation = Number(name2code.GeoAsciiParams);
+        valueOffset = 0;
+      } else {
+        console.log(`[geotiff.js] couldn't get TIFFTagLocation for ${geoKey}`);
+      }
+      GeoKeyDirectory.push(TIFFTagLocation);
+      GeoKeyDirectory.push(Count);
+      GeoKeyDirectory.push(valueOffset);
+    });
+    metadata.GeoKeyDirectory = GeoKeyDirectory;
+  }
+
+  // delete GeoKeys from metadata, because stored in GeoKeyDirectory tag
+  for (const geoKey of geoKeys) {
+    if (metadata.hasOwnProperty(geoKey)) {
+      delete metadata[geoKey];
+    }
+  }
+  ['Compression', 'ExtraSamples', 'GeographicTypeGeoKey', 'GTModelTypeGeoKey', 'GTRasterTypeGeoKey', 'ImageLength',
+  // synonym of ImageHeight
+  'ImageWidth', 'Orientation', 'PhotometricInterpretation', 'ProjectedCSTypeGeoKey', 'PlanarConfiguration', 'ResolutionUnit', 'SamplesPerPixel', 'XPosition', 'YPosition', 'RowsPerStrip'].forEach(name => {
+    if (metadata[name]) {
+      metadata[name] = geotiffwriter_toArray(metadata[name]);
+    }
+  });
+  const encodedMetadata = convertToTids(metadata);
+  const outputImage = encodeImage(flattenedValues, width, height, encodedMetadata);
+  return outputImage;
+}
+;// CONCATENATED MODULE: ./src_geotiff/logging.js
+/**
+ * A no-op logger
+ */
+class DummyLogger {
+  log() {}
+  debug() {}
+  info() {}
+  warn() {}
+  error() {}
+  time() {}
+  timeEnd() {}
+}
+let LOGGER = new DummyLogger();
+
+/**
+ *
+ * @param {object} logger the new logger. e.g `console`
+ */
+function setLogger() {
+  let logger = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : new DummyLogger();
+  LOGGER = logger;
+}
+function debug() {
+  return LOGGER.debug(...arguments);
+}
+function log() {
+  return LOGGER.log(...arguments);
+}
+function info() {
+  return LOGGER.info(...arguments);
+}
+function warn() {
+  return LOGGER.warn(...arguments);
+}
+function error() {
+  return LOGGER.error(...arguments);
+}
+function time() {
+  return LOGGER.time(...arguments);
+}
+function timeEnd() {
+  return LOGGER.timeEnd(...arguments);
+}
+// EXTERNAL MODULE: ./src_geotiff/compression/basedecoder.js + 1 modules
+var basedecoder = __webpack_require__(3668);
+;// CONCATENATED MODULE: ./src_geotiff/geotiff.js
 /** @module geotiff */
-
-
-
 
 
 
@@ -3630,34 +4793,41 @@ function makeFileReaderSource(file) {
 
 function getFieldTypeLength(fieldType) {
   switch (fieldType) {
-    case globals/* fieldTypes */.s$.BYTE: case globals/* fieldTypes */.s$.ASCII: case globals/* fieldTypes */.s$.SBYTE: case globals/* fieldTypes */.s$.UNDEFINED:
+    case globals.fieldTypes.BYTE:
+    case globals.fieldTypes.ASCII:
+    case globals.fieldTypes.SBYTE:
+    case globals.fieldTypes.UNDEFINED:
       return 1;
-    case globals/* fieldTypes */.s$.SHORT: case globals/* fieldTypes */.s$.SSHORT:
+    case globals.fieldTypes.SHORT:
+    case globals.fieldTypes.SSHORT:
       return 2;
-    case globals/* fieldTypes */.s$.LONG: case globals/* fieldTypes */.s$.SLONG: case globals/* fieldTypes */.s$.FLOAT: case globals/* fieldTypes */.s$.IFD:
+    case globals.fieldTypes.LONG:
+    case globals.fieldTypes.SLONG:
+    case globals.fieldTypes.FLOAT:
+    case globals.fieldTypes.IFD:
       return 4;
-    case globals/* fieldTypes */.s$.RATIONAL: case globals/* fieldTypes */.s$.SRATIONAL: case globals/* fieldTypes */.s$.DOUBLE:
-    case globals/* fieldTypes */.s$.LONG8: case globals/* fieldTypes */.s$.SLONG8: case globals/* fieldTypes */.s$.IFD8:
+    case globals.fieldTypes.RATIONAL:
+    case globals.fieldTypes.SRATIONAL:
+    case globals.fieldTypes.DOUBLE:
+    case globals.fieldTypes.LONG8:
+    case globals.fieldTypes.SLONG8:
+    case globals.fieldTypes.IFD8:
       return 8;
     default:
       throw new RangeError(`Invalid field type: ${fieldType}`);
   }
 }
-
 function parseGeoKeyDirectory(fileDirectory) {
   const rawGeoKeyDirectory = fileDirectory.GeoKeyDirectory;
   if (!rawGeoKeyDirectory) {
     return null;
   }
-
   const geoKeyDirectory = {};
   for (let i = 4; i <= rawGeoKeyDirectory[3] * 4; i += 4) {
-    const key = globals/* geoKeyNames */.Hm[rawGeoKeyDirectory[i]];
-    const location = (rawGeoKeyDirectory[i + 1])
-      ? (globals/* fieldTagNames */.$[rawGeoKeyDirectory[i + 1]]) : null;
+    const key = globals.geoKeyNames[rawGeoKeyDirectory[i]];
+    const location = rawGeoKeyDirectory[i + 1] ? globals.fieldTagNames[rawGeoKeyDirectory[i + 1]] : null;
     const count = rawGeoKeyDirectory[i + 2];
     const offset = rawGeoKeyDirectory[i + 3];
-
     let value = null;
     if (!location) {
       value = offset;
@@ -3678,72 +4848,80 @@ function parseGeoKeyDirectory(fileDirectory) {
   }
   return geoKeyDirectory;
 }
-
 function getValues(dataSlice, fieldType, count, offset) {
   let values = null;
   let readMethod = null;
   const fieldTypeLength = getFieldTypeLength(fieldType);
-
   switch (fieldType) {
-    case globals/* fieldTypes */.s$.BYTE: case globals/* fieldTypes */.s$.ASCII: case globals/* fieldTypes */.s$.UNDEFINED:
-      values = new Uint8Array(count); readMethod = dataSlice.readUint8;
+    case globals.fieldTypes.BYTE:
+    case globals.fieldTypes.ASCII:
+    case globals.fieldTypes.UNDEFINED:
+      values = new Uint8Array(count);
+      readMethod = dataSlice.readUint8;
       break;
-    case globals/* fieldTypes */.s$.SBYTE:
-      values = new Int8Array(count); readMethod = dataSlice.readInt8;
+    case globals.fieldTypes.SBYTE:
+      values = new Int8Array(count);
+      readMethod = dataSlice.readInt8;
       break;
-    case globals/* fieldTypes */.s$.SHORT:
-      values = new Uint16Array(count); readMethod = dataSlice.readUint16;
+    case globals.fieldTypes.SHORT:
+      values = new Uint16Array(count);
+      readMethod = dataSlice.readUint16;
       break;
-    case globals/* fieldTypes */.s$.SSHORT:
-      values = new Int16Array(count); readMethod = dataSlice.readInt16;
+    case globals.fieldTypes.SSHORT:
+      values = new Int16Array(count);
+      readMethod = dataSlice.readInt16;
       break;
-    case globals/* fieldTypes */.s$.LONG: case globals/* fieldTypes */.s$.IFD:
-      values = new Uint32Array(count); readMethod = dataSlice.readUint32;
+    case globals.fieldTypes.LONG:
+    case globals.fieldTypes.IFD:
+      values = new Uint32Array(count);
+      readMethod = dataSlice.readUint32;
       break;
-    case globals/* fieldTypes */.s$.SLONG:
-      values = new Int32Array(count); readMethod = dataSlice.readInt32;
+    case globals.fieldTypes.SLONG:
+      values = new Int32Array(count);
+      readMethod = dataSlice.readInt32;
       break;
-    case globals/* fieldTypes */.s$.LONG8: case globals/* fieldTypes */.s$.IFD8:
-      values = new Array(count); readMethod = dataSlice.readUint64;
+    case globals.fieldTypes.LONG8:
+    case globals.fieldTypes.IFD8:
+      values = new Array(count);
+      readMethod = dataSlice.readUint64;
       break;
-    case globals/* fieldTypes */.s$.SLONG8:
-      values = new Array(count); readMethod = dataSlice.readInt64;
+    case globals.fieldTypes.SLONG8:
+      values = new Array(count);
+      readMethod = dataSlice.readInt64;
       break;
-    case globals/* fieldTypes */.s$.RATIONAL:
-      values = new Uint32Array(count * 2); readMethod = dataSlice.readUint32;
+    case globals.fieldTypes.RATIONAL:
+      values = new Uint32Array(count * 2);
+      readMethod = dataSlice.readUint32;
       break;
-    case globals/* fieldTypes */.s$.SRATIONAL:
-      values = new Int32Array(count * 2); readMethod = dataSlice.readInt32;
+    case globals.fieldTypes.SRATIONAL:
+      values = new Int32Array(count * 2);
+      readMethod = dataSlice.readInt32;
       break;
-    case globals/* fieldTypes */.s$.FLOAT:
-      values = new Float32Array(count); readMethod = dataSlice.readFloat32;
+    case globals.fieldTypes.FLOAT:
+      values = new Float32Array(count);
+      readMethod = dataSlice.readFloat32;
       break;
-    case globals/* fieldTypes */.s$.DOUBLE:
-      values = new Float64Array(count); readMethod = dataSlice.readFloat64;
+    case globals.fieldTypes.DOUBLE:
+      values = new Float64Array(count);
+      readMethod = dataSlice.readFloat64;
       break;
     default:
       throw new RangeError(`Invalid field type: ${fieldType}`);
   }
 
   // normal fields
-  if (!(fieldType === globals/* fieldTypes */.s$.RATIONAL || fieldType === globals/* fieldTypes */.s$.SRATIONAL)) {
+  if (!(fieldType === globals.fieldTypes.RATIONAL || fieldType === globals.fieldTypes.SRATIONAL)) {
     for (let i = 0; i < count; ++i) {
-      values[i] = readMethod.call(
-        dataSlice, offset + (i * fieldTypeLength),
-      );
+      values[i] = readMethod.call(dataSlice, offset + i * fieldTypeLength);
     }
-  } else { // RATIONAL or SRATIONAL
+  } else {
+    // RATIONAL or SRATIONAL
     for (let i = 0; i < count; i += 2) {
-      values[i] = readMethod.call(
-        dataSlice, offset + (i * fieldTypeLength),
-      );
-      values[i + 1] = readMethod.call(
-        dataSlice, offset + ((i * fieldTypeLength) + 4),
-      );
+      values[i] = readMethod.call(dataSlice, offset + i * fieldTypeLength);
+      values[i + 1] = readMethod.call(dataSlice, offset + (i * fieldTypeLength + 4));
     }
   }
-
-  if (fieldType === globals/* fieldTypes */.s$.ASCII) {
+  if (fieldType === globals.fieldTypes.ASCII) {
     return new TextDecoder('utf-8').decode(values);
   }
   return values;
@@ -3771,7 +4949,6 @@ class GeoTIFFImageIndexError extends Error {
     this.index = index;
   }
 }
-
 class GeoTIFFBase {
   /**
    * (experimental) Reads raster data from the best fitting image. This function uses
@@ -3785,15 +4962,23 @@ class GeoTIFFBase {
    * @param {import('./geotiffimage').ReadRasterOptions} [options={}] optional parameters
    * @returns {Promise<ReadRasterResult>} the decoded array(s), with `height` and `width`, as a promise
    */
-  async readRasters(options = {}) {
-    const { window: imageWindow, width, height } = options;
-    let { resX, resY, bbox } = options;
-
+  async readRasters() {
+    let options = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
+    const {
+      window: imageWindow,
+      width,
+      height,
+      resampleMethod
+    } = options;
+    let {
+      resX,
+      resY,
+      bbox
+    } = options;
     const firstImage = await this.getImage();
     let usedImage = firstImage;
     const imageCount = await this.getImageCount();
     const imgBBox = firstImage.getBoundingBox();
-
     if (imageWindow && bbox) {
       throw new Error('Both "bbox" and "window" passed.');
     }
@@ -3805,20 +4990,15 @@ class GeoTIFFBase {
       if (imageWindow) {
         const [oX, oY] = firstImage.getOrigin();
         const [rX, rY] = firstImage.getResolution();
-
-        bbox = [
-          oX + (imageWindow[0] * rX),
-          oY + (imageWindow[1] * rY),
-          oX + (imageWindow[2] * rX),
-          oY + (imageWindow[3] * rY),
-        ];
+        bbox = [oX + imageWindow[0] * rX, oY + imageWindow[1] * rY, oX + imageWindow[2] * rX, oY + imageWindow[3] * rY];
       }
 
       // if we have a bbox (or calculated one)
 
       const usedBBox = bbox || imgBBox;
+      //Add a small oversample buffer if resampleMethod is bilinear
 
-      if (width) {
+      if (resampleMethod) if (width) {
         if (resX) {
           throw new Error('Both width and resX passed');
         }
@@ -3837,45 +5017,36 @@ class GeoTIFFBase {
       const allImages = [];
       for (let i = 0; i < imageCount; ++i) {
         const image = await this.getImage(i);
-        const { SubfileType: subfileType, NewSubfileType: newSubfileType } = image.fileDirectory;
+        const {
+          SubfileType: subfileType,
+          NewSubfileType: newSubfileType
+        } = image.fileDirectory;
         if (i === 0 || subfileType === 2 || newSubfileType & 1) {
           allImages.push(image);
         }
       }
-
       allImages.sort((a, b) => a.getWidth() - b.getWidth());
       for (let i = 0; i < allImages.length; ++i) {
         const image = allImages[i];
         const imgResX = (imgBBox[2] - imgBBox[0]) / image.getWidth();
         const imgResY = (imgBBox[3] - imgBBox[1]) / image.getHeight();
-
         usedImage = image;
-        if ((resX && resX > imgResX) || (resY && resY > imgResY)) {
+        if (resX && resX > imgResX || resY && resY > imgResY) {
           break;
         }
       }
     }
-
     let wnd = imageWindow;
     if (bbox) {
       const [oX, oY] = firstImage.getOrigin();
       const [imageResX, imageResY] = usedImage.getResolution(firstImage);
-
-      wnd = [
-        Math.round((bbox[0] - oX) / imageResX),
-        Math.round((bbox[1] - oY) / imageResY),
-        Math.round((bbox[2] - oX) / imageResX),
-        Math.round((bbox[3] - oY) / imageResY),
-      ];
-      wnd = [
-        Math.min(wnd[0], wnd[2]),
-        Math.min(wnd[1], wnd[3]),
-        Math.max(wnd[0], wnd[2]),
-        Math.max(wnd[1], wnd[3]),
-      ];
+      wnd = [Math.round((bbox[0] - oX) / imageResX), Math.round((bbox[1] - oY) / imageResY), Math.round((bbox[2] - oX) / imageResX), Math.round((bbox[3] - oY) / imageResY)];
+      wnd = [Math.min(wnd[0], wnd[2]), Math.min(wnd[1], wnd[3]), Math.max(wnd[0], wnd[2]), Math.max(wnd[1], wnd[3])];
     }
-
-    return usedImage.readRasters({ ...options, window: wnd });
+    return usedImage.readRasters({
+      ...options,
+      window: wnd
+    });
   }
 }
 
@@ -3888,7 +5059,7 @@ class GeoTIFFBase {
  * The abstraction for a whole GeoTIFF file.
  * @augments GeoTIFFBase
  */
-class geotiff_GeoTIFF extends GeoTIFFBase {
+class GeoTIFF extends GeoTIFFBase {
   /**
    * @constructor
    * @param {*} source The datasource to read from.
@@ -3898,7 +5069,8 @@ class geotiff_GeoTIFF extends GeoTIFFBase {
    *                                to the first IFD.
    * @param {GeoTIFFOptions} [options] further options.
    */
-  constructor(source, littleEndian, bigTiff, firstIFDOffset, options = {}) {
+  constructor(source, littleEndian, bigTiff, firstIFDOffset) {
+    let options = arguments.length > 4 && arguments[4] !== undefined ? arguments[4] : {};
     super();
     this.source = source;
     this.littleEndian = littleEndian;
@@ -3908,18 +5080,12 @@ class geotiff_GeoTIFF extends GeoTIFFBase {
     this.ifdRequests = [];
     this.ghostValues = null;
   }
-
   async getSlice(offset, size) {
     const fallbackSize = this.bigTiff ? 4048 : 1024;
-    return new DataSlice(
-      (await this.source.fetch([{
-        offset,
-        length: typeof size !== 'undefined' ? size : fallbackSize,
-      }]))[0],
+    return new DataSlice((await this.source.fetch([{
       offset,
-      this.littleEndian,
-      this.bigTiff,
-    );
+      length: typeof size !== 'undefined' ? size : fallbackSize
+    }]))[0], offset, this.littleEndian, this.bigTiff);
   }
 
   /**
@@ -3933,19 +5099,15 @@ class geotiff_GeoTIFF extends GeoTIFFBase {
   async parseFileDirectoryAt(offset) {
     const entrySize = this.bigTiff ? 20 : 12;
     const offsetSize = this.bigTiff ? 8 : 2;
-
     let dataSlice = await this.getSlice(offset);
-    const numDirEntries = this.bigTiff
-      ? dataSlice.readUint64(offset)
-      : dataSlice.readUint16(offset);
+    const numDirEntries = this.bigTiff ? dataSlice.readUint64(offset) : dataSlice.readUint16(offset);
 
     // if the slice does not cover the whole IFD, request a bigger slice, where the
     // whole IFD fits: num of entries + n x tag length + offset to next IFD
-    const byteSize = (numDirEntries * entrySize) + (this.bigTiff ? 16 : 6);
+    const byteSize = numDirEntries * entrySize + (this.bigTiff ? 16 : 6);
     if (!dataSlice.covers(offset, byteSize)) {
       dataSlice = await this.getSlice(offset, byteSize);
     }
-
     const fileDirectory = {};
 
     // loop over the IFD and create a file directory object
@@ -3953,10 +5115,7 @@ class geotiff_GeoTIFF extends GeoTIFFBase {
     for (let entryCount = 0; entryCount < numDirEntries; i += entrySize, ++entryCount) {
       const fieldTag = dataSlice.readUint16(i);
       const fieldType = dataSlice.readUint16(i + 2);
-      const typeCount = this.bigTiff
-        ? dataSlice.readUint64(i + 4)
-        : dataSlice.readUint32(i + 4);
-
+      const typeCount = this.bigTiff ? dataSlice.readUint64(i + 4) : dataSlice.readUint32(i + 4);
       let fieldValues;
       let value;
       const fieldTypeLength = getFieldTypeLength(fieldType);
@@ -3982,28 +5141,19 @@ class geotiff_GeoTIFF extends GeoTIFFBase {
       }
 
       // unpack single values from the array
-      if (typeCount === 1 && globals/* arrayFields */.NZ.indexOf(fieldTag) === -1
-        && !(fieldType === globals/* fieldTypes */.s$.RATIONAL || fieldType === globals/* fieldTypes */.s$.SRATIONAL)) {
+      if (typeCount === 1 && globals.arrayFields.indexOf(fieldTag) === -1 && !(fieldType === globals.fieldTypes.RATIONAL || fieldType === globals.fieldTypes.SRATIONAL)) {
         value = fieldValues[0];
       } else {
         value = fieldValues;
       }
 
       // write the tags value to the file directly
-      fileDirectory[globals/* fieldTagNames */.$[fieldTag]] = value;
+      fileDirectory[globals.fieldTagNames[fieldTag]] = value;
     }
     const geoKeyDirectory = parseGeoKeyDirectory(fileDirectory);
-    const nextIFDByteOffset = dataSlice.readOffset(
-      offset + offsetSize + (entrySize * numDirEntries),
-    );
-
-    return new ImageFileDirectory(
-      fileDirectory,
-      geoKeyDirectory,
-      nextIFDByteOffset,
-    );
+    const nextIFDByteOffset = dataSlice.readOffset(offset + offsetSize + entrySize * numDirEntries);
+    return new ImageFileDirectory(fileDirectory, geoKeyDirectory, nextIFDByteOffset);
   }
-
   async requestIFD(index) {
     // see if we already have that IFD index requested.
     if (this.ifdRequests[index]) {
@@ -4046,12 +5196,10 @@ class geotiff_GeoTIFF extends GeoTIFFBase {
    * @param {number} [index=0] the index of the image to return.
    * @returns {Promise<GeoTIFFImage>} the image at the given index
    */
-  async getImage(index = 0) {
+  async getImage() {
+    let index = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : 0;
     const ifd = await this.requestIFD(index);
-    return new geotiffimage(
-      ifd.fileDirectory, ifd.geoKeyDirectory,
-      this.dataView, this.littleEndian, this.cache, this.source,
-    );
+    return new geotiffimage(ifd.fileDirectory, ifd.geoKeyDirectory, this.dataView, this.littleEndian, this.cache, this.source);
   }
 
   /**
@@ -4091,22 +5239,19 @@ class geotiff_GeoTIFF extends GeoTIFFBase {
     const detectionString = 'GDAL_STRUCTURAL_METADATA_SIZE=';
     const heuristicAreaSize = detectionString.length + 100;
     let slice = await this.getSlice(offset, heuristicAreaSize);
-    if (detectionString === getValues(slice, globals/* fieldTypes */.s$.ASCII, detectionString.length, offset)) {
-      const valuesString = getValues(slice, globals/* fieldTypes */.s$.ASCII, heuristicAreaSize, offset);
+    if (detectionString === getValues(slice, globals.fieldTypes.ASCII, detectionString.length, offset)) {
+      const valuesString = getValues(slice, globals.fieldTypes.ASCII, heuristicAreaSize, offset);
       const firstLine = valuesString.split('\n')[0];
       const metadataSize = Number(firstLine.split('=')[1].split(' ')[0]) + firstLine.length;
       if (metadataSize > heuristicAreaSize) {
         slice = await this.getSlice(offset, metadataSize);
       }
-      const fullString = getValues(slice, globals/* fieldTypes */.s$.ASCII, metadataSize, offset);
+      const fullString = getValues(slice, globals.fieldTypes.ASCII, metadataSize, offset);
       this.ghostValues = {};
-      fullString
-        .split('\n')
-        .filter((line) => line.length > 0)
-        .map((line) => line.split('='))
-        .forEach(([key, value]) => {
-          this.ghostValues[key] = value;
-        });
+      fullString.split('\n').filter(line => line.length > 0).map(line => line.split('=')).forEach(_ref => {
+        let [key, value] = _ref;
+        this.ghostValues[key] = value;
+      });
     }
     return this.ghostValues;
   }
@@ -4120,9 +5265,11 @@ class geotiff_GeoTIFF extends GeoTIFFBase {
    *                               to be aborted
    */
   static async fromSource(source, options, signal) {
-    const headerData = (await source.fetch([{ offset: 0, length: 1024 }], signal))[0];
+    const headerData = (await source.fetch([{
+      offset: 0,
+      length: 1024
+    }], signal))[0];
     const dataView = new DataView64(headerData);
-
     const BOM = dataView.getUint16(0, 0);
     let littleEndian;
     if (BOM === 0x4949) {
@@ -4132,7 +5279,6 @@ class geotiff_GeoTIFF extends GeoTIFFBase {
     } else {
       throw new TypeError('Invalid byte order value.');
     }
-
     const magicNumber = dataView.getUint16(2, littleEndian);
     let bigTiff;
     if (magicNumber === 42) {
@@ -4146,11 +5292,8 @@ class geotiff_GeoTIFF extends GeoTIFFBase {
     } else {
       throw new TypeError('Invalid magic number.');
     }
-
-    const firstIFDOffset = bigTiff
-      ? dataView.getUint64(8, littleEndian)
-      : dataView.getUint32(4, littleEndian);
-    return new geotiff_GeoTIFF(source, littleEndian, bigTiff, firstIFDOffset, options);
+    const firstIFDOffset = bigTiff ? dataView.getUint64(8, littleEndian) : dataView.getUint32(4, littleEndian);
+    return new GeoTIFF(source, littleEndian, bigTiff, firstIFDOffset, options);
   }
 
   /**
@@ -4166,8 +5309,7 @@ class geotiff_GeoTIFF extends GeoTIFFBase {
   }
 }
 
-
-/* harmony default export */ const geotiff = ((/* unused pure expression or super */ null && (geotiff_GeoTIFF)));
+/* harmony default export */ const geotiff = (GeoTIFF);
 
 /**
  * Wrapper for GeoTIFF files that have external overviews.
@@ -4184,16 +5326,12 @@ class MultiGeoTIFF extends GeoTIFFBase {
     this.mainFile = mainFile;
     this.overviewFiles = overviewFiles;
     this.imageFiles = [mainFile].concat(overviewFiles);
-
     this.fileDirectoriesPerFile = null;
     this.fileDirectoriesPerFileParsing = null;
     this.imageCount = null;
   }
-
   async parseFileDirectoriesPerFile() {
-    const requests = [this.mainFile.parseFileDirectoryAt(this.mainFile.firstIFDOffset)]
-      .concat(this.overviewFiles.map((file) => file.parseFileDirectoryAt(file.firstIFDOffset)));
-
+    const requests = [this.mainFile.parseFileDirectoryAt(this.mainFile.firstIFDOffset)].concat(this.overviewFiles.map(file => file.parseFileDirectoryAt(file.firstIFDOffset)));
     this.fileDirectoriesPerFile = await Promise.all(requests);
     return this.fileDirectoriesPerFile;
   }
@@ -4204,7 +5342,8 @@ class MultiGeoTIFF extends GeoTIFFBase {
    * @param {number} [index=0] the index of the image to return.
    * @returns {Promise<GeoTIFFImage>} the image at the given index
    */
-  async getImage(index = 0) {
+  async getImage() {
+    let index = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : 0;
     await this.getImageCount();
     await this.parseFileDirectoriesPerFile();
     let visited = 0;
@@ -4214,17 +5353,13 @@ class MultiGeoTIFF extends GeoTIFFBase {
       for (let ii = 0; ii < this.imageCounts[i]; ii++) {
         if (index === visited) {
           const ifd = await imageFile.requestIFD(relativeIndex);
-          return new geotiffimage(
-            ifd.fileDirectory, ifd.geoKeyDirectory,
-            imageFile.dataView, imageFile.littleEndian, imageFile.cache, imageFile.source,
-          );
+          return new geotiffimage(ifd.fileDirectory, ifd.geoKeyDirectory, imageFile.dataView, imageFile.littleEndian, imageFile.cache, imageFile.source);
         }
         visited++;
         relativeIndex++;
       }
       relativeIndex = 0;
     }
-
     throw new RangeError('Invalid image index');
   }
 
@@ -4237,14 +5372,12 @@ class MultiGeoTIFF extends GeoTIFFBase {
     if (this.imageCount !== null) {
       return this.imageCount;
     }
-    const requests = [this.mainFile.getImageCount()]
-      .concat(this.overviewFiles.map((file) => file.getImageCount()));
+    const requests = [this.mainFile.getImageCount()].concat(this.overviewFiles.map(file => file.getImageCount()));
     this.imageCounts = await Promise.all(requests);
     this.imageCount = this.imageCounts.reduce((count, ifds) => count + ifds, 0);
     return this.imageCount;
   }
 }
-
 
 
 /**
@@ -4256,8 +5389,10 @@ class MultiGeoTIFF extends GeoTIFFBase {
  *                               to be aborted
  * @returns {Promise<GeoTIFF>} The resulting GeoTIFF file.
  */
-async function fromUrl(url, options = {}, signal) {
-  return geotiff_GeoTIFF.fromSource(makeRemoteSource(url, options), signal);
+async function fromUrl(url) {
+  let options = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
+  let signal = arguments.length > 2 ? arguments[2] : undefined;
+  return GeoTIFF.fromSource(makeRemoteSource(url, options), signal);
 }
 
 /**
@@ -4269,8 +5404,10 @@ async function fromUrl(url, options = {}, signal) {
  *                               to be aborted
  * @returns {Promise<GeoTIFF>} The resulting GeoTIFF file.
  */
-async function fromCustomClient(client, options = {}, signal) {
-  return geotiff_GeoTIFF.fromSource(makeCustomSource(client, options), signal);
+async function fromCustomClient(client) {
+  let options = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
+  let signal = arguments.length > 2 ? arguments[2] : undefined;
+  return GeoTIFF.fromSource(makeCustomSource(client, options), signal);
 }
 
 /**
@@ -4282,7 +5419,7 @@ async function fromCustomClient(client, options = {}, signal) {
  * @returns {Promise<GeoTIFF>} The resulting GeoTIFF file.
  */
 async function fromArrayBuffer(arrayBuffer, signal) {
-  return geotiff_GeoTIFF.fromSource(makeBufferSource(arrayBuffer), signal);
+  return GeoTIFF.fromSource(makeBufferSource(arrayBuffer), signal);
 }
 
 /**
@@ -4298,7 +5435,7 @@ async function fromArrayBuffer(arrayBuffer, signal) {
  * @returns {Promise<GeoTIFF>} The resulting GeoTIFF file.
  */
 async function fromFile(path, signal) {
-  return geotiff_GeoTIFF.fromSource(makeFileSource(path), signal);
+  return GeoTIFF.fromSource(makeFileSource(path), signal);
 }
 
 /**
@@ -4312,7 +5449,7 @@ async function fromFile(path, signal) {
  * @returns {Promise<GeoTIFF>} The resulting GeoTIFF file.
  */
 async function fromBlob(blob, signal) {
-  return geotiff_GeoTIFF.fromSource(makeFileReaderSource(blob), signal);
+  return GeoTIFF.fromSource(makeFileReaderSource(blob), signal);
 }
 
 /**
@@ -4326,12 +5463,12 @@ async function fromBlob(blob, signal) {
  *                               to be aborted
  * @returns {Promise<MultiGeoTIFF>} The resulting MultiGeoTIFF file.
  */
-async function fromUrls(mainUrl, overviewUrls = [], options = {}, signal) {
-  const mainFile = await geotiff_GeoTIFF.fromSource(makeRemoteSource(mainUrl, options), signal);
-  const overviewFiles = await Promise.all(
-    overviewUrls.map((url) => geotiff_GeoTIFF.fromSource(makeRemoteSource(url, options))),
-  );
-
+async function fromUrls(mainUrl) {
+  let overviewUrls = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : [];
+  let options = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : {};
+  let signal = arguments.length > 3 ? arguments[3] : undefined;
+  const mainFile = await GeoTIFF.fromSource(makeRemoteSource(mainUrl, options), signal);
+  const overviewFiles = await Promise.all(overviewUrls.map(url => GeoTIFF.fromSource(makeRemoteSource(url, options))));
   return new MultiGeoTIFF(mainFile, overviewFiles);
 }
 
@@ -4347,499 +5484,4173 @@ function writeArrayBuffer(values, metadata) {
 
 
 
+/***/ }),
 
-// EXTERNAL MODULE: ../../node_modules/geotiff-palette/index.js
-var geotiff_palette = __webpack_require__(8286);
-// EXTERNAL MODULE: ../../node_modules/calc-image-stats/dist/calc-image-stats.min.js
-var calc_image_stats_min = __webpack_require__(1353);
-var calc_image_stats_min_default = /*#__PURE__*/__webpack_require__.n(calc_image_stats_min);
-// EXTERNAL MODULE: ./src/utils.js
-var utils = __webpack_require__(2347);
-;// CONCATENATED MODULE: ./src/parseData.js
+/***/ 167:
+/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
-
-
-
-function processResult(result) {
-  const stats = calc_image_stats_min_default()(result.values, {
-    height: result.height,
-    layout: '[band][row][column]',
-    noData: result.noDataValue,
-    precise: false,
-    stats: ['max', 'min', 'range'],
-    width: result.width
-  });
-  result.maxs = stats.bands.map(band => band.max);
-  result.mins = stats.bands.map(band => band.min);
-  result.ranges = stats.bands.map(band => band.range);
-  return result;
-}
-
-/* We're not using async because trying to avoid dependency on babel's polyfill
-There can be conflicts when GeoRaster is used in another project that is also
-using @babel/polyfill */
-function parseData(data, debug) {
-  return new Promise((resolve, reject) => {
-    try {
-      if (debug) console.log('starting parseData with', data);
-      if (debug) console.log('\tGeoTIFF:', typeof GeoTIFF);
-      const result = {};
-      let height, width;
-      if (data.rasterType === 'object') {
-        result.values = data.data;
-        result.height = height = data.metadata.height || result.values[0].length;
-        result.width = width = data.metadata.width || result.values[0][0].length;
-        result.pixelHeight = data.metadata.pixelHeight;
-        result.pixelWidth = data.metadata.pixelWidth;
-        result.projection = data.metadata.projection;
-        result.xmin = data.metadata.xmin;
-        result.ymax = data.metadata.ymax;
-        result.noDataValue = data.metadata.noDataValue;
-        result.numberOfRasters = result.values.length;
-        result.xmax = result.xmin + result.width * result.pixelWidth;
-        result.ymin = result.ymax - result.height * result.pixelHeight;
-        result._data = null;
-        resolve(processResult(result));
-      } else if (data.rasterType === 'geotiff') {
-        result._data = data.data;
-        const initArgs = [data.data];
-        let initFunction = fromArrayBuffer;
-        if (data.sourceType === 'url') {
-          initFunction = fromUrl;
-          initArgs.push(data.options);
-        } else if (data.sourceType === 'Blob') {
-          initFunction = fromBlob;
-        }
-        if (debug) console.log('data.rasterType is geotiff');
-        resolve(initFunction(...initArgs).then(geotiff => {
-          if (debug) console.log('geotiff:', geotiff);
-          return geotiff.getImage().then(image => {
-            try {
-              if (debug) console.log('image:', image);
-              const fileDirectory = image.fileDirectory;
-              const {
-                GeographicTypeGeoKey,
-                ProjectedCSTypeGeoKey
-              } = image.getGeoKeys() || {};
-              result.projection = ProjectedCSTypeGeoKey || GeographicTypeGeoKey || data.metadata.projection;
-              if (debug) console.log('projection:', result.projection);
-              result.height = height = image.getHeight();
-              if (debug) console.log('result.height:', result.height);
-              result.width = width = image.getWidth();
-              if (debug) console.log('result.width:', result.width);
-              const [resolutionX, resolutionY] = image.getResolution();
-              result.pixelHeight = Math.abs(resolutionY);
-              result.pixelWidth = Math.abs(resolutionX);
-              const [originX, originY] = image.getOrigin();
-              result.xmin = originX;
-              result.xmax = result.xmin + width * result.pixelWidth;
-              result.ymax = originY;
-              result.ymin = result.ymax - height * result.pixelHeight;
-              result.noDataValue = fileDirectory.GDAL_NODATA ? parseFloat(fileDirectory.GDAL_NODATA) : null;
-              result.numberOfRasters = fileDirectory.SamplesPerPixel;
-              if (fileDirectory.ColorMap) {
-                result.palette = (0,geotiff_palette.getPalette)(image);
-              }
-              if (!data.readOnDemand) {
-                return image.readRasters().then(rasters => {
-                  result.values = rasters.map(valuesInOneDimension => {
-                    return (0,utils.unflatten)(valuesInOneDimension, {
-                      height,
-                      width
-                    });
-                  });
-                  return processResult(result);
-                });
-              } else {
-                result._geotiff = geotiff;
-                return result;
-              }
-            } catch (error) {
-              reject(error);
-              console.error('[georaster] error parsing georaster:', error);
-            }
-          });
-        }));
-      }
-    } catch (error) {
-      reject(error);
-      console.error('[georaster] error parsing georaster:', error);
-    }
-  });
-}
-;// CONCATENATED MODULE: ./src/worker.js
-
-
-// this is a bit of a hack to trick geotiff to work with web worker
-// eslint-disable-next-line no-unused-vars
-const worker_window = (/* unused pure expression or super */ null && (self));
-onmessage = e => {
-  const data = e.data;
-  parseData(data).then(result => {
-    const transferBuffers = [];
-    if (result.values) {
-      let last;
-      result.values.forEach(a => a.forEach(_ref => {
-        let {
-          buffer
-        } = _ref;
-        if (buffer instanceof ArrayBuffer && buffer !== last) {
-          transferBuffers.push(buffer);
-          last = buffer;
-        }
-      }));
-    }
-    if (result._data instanceof ArrayBuffer) {
-      transferBuffers.push(result._data);
-    }
-    postMessage(result, transferBuffers);
-    close();
-  }).catch(error => {
-    postMessage({
-      error
-    });
-    close();
-  });
+"use strict";
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   ExtraSamplesValues: () => (/* binding */ ExtraSamplesValues),
+/* harmony export */   LercAddCompression: () => (/* binding */ LercAddCompression),
+/* harmony export */   LercParameters: () => (/* binding */ LercParameters),
+/* harmony export */   arrayFields: () => (/* binding */ arrayFields),
+/* harmony export */   fieldTagNames: () => (/* binding */ fieldTagNames),
+/* harmony export */   fieldTagTypes: () => (/* binding */ fieldTagTypes),
+/* harmony export */   fieldTags: () => (/* binding */ fieldTags),
+/* harmony export */   fieldTypeNames: () => (/* binding */ fieldTypeNames),
+/* harmony export */   fieldTypes: () => (/* binding */ fieldTypes),
+/* harmony export */   geoKeyNames: () => (/* binding */ geoKeyNames),
+/* harmony export */   geoKeys: () => (/* binding */ geoKeys),
+/* harmony export */   photometricInterpretations: () => (/* binding */ photometricInterpretations)
+/* harmony export */ });
+const fieldTagNames = {
+  // TIFF Baseline
+  0x013B: 'Artist',
+  0x0102: 'BitsPerSample',
+  0x0109: 'CellLength',
+  0x0108: 'CellWidth',
+  0x0140: 'ColorMap',
+  0x0103: 'Compression',
+  0x8298: 'Copyright',
+  0x0132: 'DateTime',
+  0x0152: 'ExtraSamples',
+  0x010A: 'FillOrder',
+  0x0121: 'FreeByteCounts',
+  0x0120: 'FreeOffsets',
+  0x0123: 'GrayResponseCurve',
+  0x0122: 'GrayResponseUnit',
+  0x013C: 'HostComputer',
+  0x010E: 'ImageDescription',
+  0x0101: 'ImageLength',
+  0x0100: 'ImageWidth',
+  0x010F: 'Make',
+  0x0119: 'MaxSampleValue',
+  0x0118: 'MinSampleValue',
+  0x0110: 'Model',
+  0x00FE: 'NewSubfileType',
+  0x0112: 'Orientation',
+  0x0106: 'PhotometricInterpretation',
+  0x011C: 'PlanarConfiguration',
+  0x0128: 'ResolutionUnit',
+  0x0116: 'RowsPerStrip',
+  0x0115: 'SamplesPerPixel',
+  0x0131: 'Software',
+  0x0117: 'StripByteCounts',
+  0x0111: 'StripOffsets',
+  0x00FF: 'SubfileType',
+  0x0107: 'Threshholding',
+  0x011A: 'XResolution',
+  0x011B: 'YResolution',
+  // TIFF Extended
+  0x0146: 'BadFaxLines',
+  0x0147: 'CleanFaxData',
+  0x0157: 'ClipPath',
+  0x0148: 'ConsecutiveBadFaxLines',
+  0x01B1: 'Decode',
+  0x01B2: 'DefaultImageColor',
+  0x010D: 'DocumentName',
+  0x0150: 'DotRange',
+  0x0141: 'HalftoneHints',
+  0x015A: 'Indexed',
+  0x015B: 'JPEGTables',
+  0x011D: 'PageName',
+  0x0129: 'PageNumber',
+  0x013D: 'Predictor',
+  0x013F: 'PrimaryChromaticities',
+  0x0214: 'ReferenceBlackWhite',
+  0x0153: 'SampleFormat',
+  0x0154: 'SMinSampleValue',
+  0x0155: 'SMaxSampleValue',
+  0x022F: 'StripRowCounts',
+  0x014A: 'SubIFDs',
+  0x0124: 'T4Options',
+  0x0125: 'T6Options',
+  0x0145: 'TileByteCounts',
+  0x0143: 'TileLength',
+  0x0144: 'TileOffsets',
+  0x0142: 'TileWidth',
+  0x012D: 'TransferFunction',
+  0x013E: 'WhitePoint',
+  0x0158: 'XClipPathUnits',
+  0x011E: 'XPosition',
+  0x0211: 'YCbCrCoefficients',
+  0x0213: 'YCbCrPositioning',
+  0x0212: 'YCbCrSubSampling',
+  0x0159: 'YClipPathUnits',
+  0x011F: 'YPosition',
+  // EXIF
+  0x9202: 'ApertureValue',
+  0xA001: 'ColorSpace',
+  0x9004: 'DateTimeDigitized',
+  0x9003: 'DateTimeOriginal',
+  0x8769: 'Exif IFD',
+  0x9000: 'ExifVersion',
+  0x829A: 'ExposureTime',
+  0xA300: 'FileSource',
+  0x9209: 'Flash',
+  0xA000: 'FlashpixVersion',
+  0x829D: 'FNumber',
+  0xA420: 'ImageUniqueID',
+  0x9208: 'LightSource',
+  0x927C: 'MakerNote',
+  0x9201: 'ShutterSpeedValue',
+  0x9286: 'UserComment',
+  // IPTC
+  0x83BB: 'IPTC',
+  // ICC
+  0x8773: 'ICC Profile',
+  // XMP
+  0x02BC: 'XMP',
+  // GDAL
+  0xA480: 'GDAL_METADATA',
+  0xA481: 'GDAL_NODATA',
+  // Photoshop
+  0x8649: 'Photoshop',
+  // GeoTiff
+  0x830E: 'ModelPixelScale',
+  0x8482: 'ModelTiepoint',
+  0x85D8: 'ModelTransformation',
+  0x87AF: 'GeoKeyDirectory',
+  0x87B0: 'GeoDoubleParams',
+  0x87B1: 'GeoAsciiParams',
+  // LERC
+  0xC5F2: 'LercParameters'
 };
-;// CONCATENATED MODULE: ../../node_modules/georaster-to-canvas/index.js
-/* global ImageData */
-
-function toImageData(georaster, canvasWidth, canvasHeight) {
-  if (georaster.values) {
-    const { noDataValue, mins, ranges, values } = georaster;
-    const numBands = values.length;
-    const xRatio = georaster.width / canvasWidth;
-    const yRatio = georaster.height / canvasHeight;
-    const data = new Uint8ClampedArray(canvasWidth * canvasHeight * 4);
-    for (let rowIndex = 0; rowIndex < canvasHeight; rowIndex++) {
-      for (let columnIndex = 0; columnIndex < canvasWidth; columnIndex++) {
-        const rasterRowIndex = Math.round(rowIndex * yRatio);
-        const rasterColumnIndex = Math.round(columnIndex * xRatio);
-        const pixelValues = values.map(band => {
-          try {
-            return band[rasterRowIndex][rasterColumnIndex];
-          } catch (error) {
-            console.error(error);
-          }
-        });
-        const haveDataForAllBands = pixelValues.every(value => value !== undefined && value !== noDataValue);
-        if (haveDataForAllBands) {
-          const i = (rowIndex * (canvasWidth * 4)) + 4 * columnIndex;
-          if (numBands === 1) {
-            const pixelValue = Math.round(pixelValues[0]);
-            const scaledPixelValue = Math.round((pixelValue - mins[0]) / ranges[0] * 255);
-            data[i] = scaledPixelValue;
-            data[i + 1] = scaledPixelValue;
-            data[i + 2] = scaledPixelValue;
-            data[i + 3] = 255;
-          } else if (numBands === 3) {
-            try {
-              const [r, g, b] = pixelValues;
-              data[i] = r;
-              data[i + 1] = g;
-              data[i + 2] = b;
-              data[i + 3] = 255;
-            } catch (error) {
-              console.error(error);
-            }
-          } else if (numBands === 4) {
-            try {
-              const [r, g, b, a] = pixelValues;
-              data[i] = r;
-              data[i + 1] = g;
-              data[i + 2] = b;
-              data[i + 3] = a;
-            } catch (error) {
-              console.error(error);
-            }
-          }
-        }
-      }
-    }
-    return new ImageData(data, canvasWidth, canvasHeight);
+const fieldTags = {};
+for (const key in fieldTagNames) {
+  if (fieldTagNames.hasOwnProperty(key)) {
+    fieldTags[fieldTagNames[key]] = parseInt(key, 10);
   }
 }
-
-function toCanvas(georaster, options) {
-  if (typeof ImageData === "undefined") {
-    throw `toCanvas is not supported in your environment`;
-  } else {
-    const canvas = document.createElement("CANVAS");
-    const canvasHeight = options && options.height ? Math.min(georaster.height, options.height) : Math.min(georaster.height, 100);
-    const canvasWidth = options && options.width ? Math.min(georaster.width, options.width) : Math.min(georaster.width, 100);
-    canvas.height = canvasHeight;
-    canvas.width = canvasWidth;
-    canvas.style.minHeight = "200px";
-    canvas.style.minWidth = "400px";
-    canvas.style.maxWidth = "100%";
-    const context = canvas.getContext("2d");
-    const imageData = toImageData(georaster, canvasWidth, canvasHeight);
-    context.putImageData(imageData, 0, 0);
-    return canvas;
-  }
-}
-
-
-;// CONCATENATED MODULE: ./src/index.js
-/* module decorator */ module = __webpack_require__.hmd(module);
-
-
-/* global Blob */
-/* global URL */
-
-//import fetch from 'cross-fetch';
-
-
-
-
-
-function urlExists(url) {
-  try {
-    return fetch(url, {
-      method: 'HEAD'
-    }).then(response => response.status === 200).catch(error => false);
-  } catch (error) {
-    return Promise.resolve(false);
-  }
-}
-function src_getValues(geotiff, options) {
-  const {
-    left,
-    top,
-    right,
-    bottom,
-    width,
-    height,
-    resampleMethod,
-    samples
-  } = options;
-  // note this.image and this.geotiff both have a readRasters method;
-  // they are not the same thing. use this.geotiff for experimental version
-  // that reads from best overview
-  return geotiff.readRasters({
-    window: [left, top, right, bottom],
-    width: width,
-    height: height,
-    resampleMethod: resampleMethod || 'bilinear',
-    samples: samples
-  }).then(rasters => {
-    /*
-      The result appears to be an array with a width and height property set.
-      We only need the values, assuming the user remembers the width and height.
-      Ex: [[0,27723,...11025,12924], width: 10, height: 10]
-    */
-    return rasters.map(raster => (0,utils.unflatten)(raster, {
-      height,
-      width
-    }));
-  });
-}
-;
-class GeoRaster {
-  constructor(data, metadata, debug) {
-    let options = arguments.length > 3 && arguments[3] !== undefined ? arguments[3] : {};
-    if (debug) console.log('starting GeoRaster.constructor with', data, metadata);
-    this._web_worker_is_available = typeof worker_namespaceObject["default"] !== 'undefined';
-    this._blob_is_available = typeof Blob !== 'undefined';
-    this._url_is_available = typeof URL !== 'undefined';
-    this._options = options;
-
-    // check if should convert to buffer
-    if (typeof data === 'object' && data.constructor && data.constructor.name === 'Buffer' && Buffer.isBuffer(data) === false) {
-      data = new Buffer(data);
-    }
-    this.readOnDemand = false;
-    if (typeof data === 'string') {
-      if (debug) console.log('data is a url');
-      this._data = data;
-      this._url = data;
-      this.rasterType = 'geotiff';
-      this.sourceType = 'url';
-      this.readOnDemand = true;
-    } else if (typeof Blob !== 'undefined' && data instanceof Blob) {
-      this._data = data;
-      this.rasterType = 'geotiff';
-      this.sourceType = 'Blob';
-    } else if (typeof Buffer !== 'undefined' && Buffer.isBuffer(data)) {
-      // this is node
-      if (debug) console.log('data is a buffer');
-      this._data = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-      this.rasterType = 'geotiff';
-      this.sourceType = 'Buffer';
-    } else if (data instanceof ArrayBuffer) {
-      // this is browser
-      this._data = data;
-      this.rasterType = 'geotiff';
-      this.sourceType = 'ArrayBuffer';
-      this._metadata = metadata;
-    } else if (Array.isArray(data) && metadata) {
-      this._data = data;
-      this.rasterType = 'object';
-      this._metadata = metadata;
-    }
-    if (metadata && metadata.readOnDemand !== undefined) {
-      this.readOnDemand = metadata.readOnDemand;
-    }
-    if (debug) console.log('this after construction:', this);
-  }
-  preinitialize(debug) {
-    if (debug) console.log('starting preinitialize');
-    if (this._url) {
-      // initialize these outside worker to avoid weird worker error
-      // I don't see how cache option is passed through with fromUrl,
-      // though constantinius says it should work: https://github.com/geotiffjs/geotiff.js/issues/61
-      const ovrURL = this._url + '.ovr';
-      return urlExists(ovrURL).then(ovrExists => {
-        if (debug) console.log('overview exists:', ovrExists);
-        this._options = Object.assign({}, {
-          cache: true,
-          forceXHR: false
-        }, this._options);
-        if (debug) console.log('options:', this._options);
-        if (ovrExists) {
-          return fromUrls(this._url, [ovrURL], this._options);
-        } else {
-          return fromUrl(this._url, this._options);
-        }
-      });
-    } else {
-      // no pre-initialization steps required if not using a Cloud Optimized GeoTIFF
-      return Promise.resolve();
-    }
-  }
-  initialize(debug) {
-    return this.preinitialize(debug).then(geotiff => {
-      return new Promise((resolve, reject) => {
-        if (debug) console.log('starting GeoRaster.initialize');
-        if (debug) console.log('this', this);
-        if (this.rasterType === 'object' || this.rasterType === 'geotiff' || this.rasterType === 'tiff') {
-          const parseDataArgs = {
-            data: this._data,
-            options: this._options,
-            rasterType: this.rasterType,
-            sourceType: this.sourceType,
-            readOnDemand: this.readOnDemand,
-            metadata: this._metadata
-          };
-          const parseDataDone = data => {
-            for (const key in data) {
-              this[key] = data[key];
-            }
-            if (this.readOnDemand) {
-              if (this._url) this._geotiff = geotiff;
-              this.getValues = function (options) {
-                return src_getValues(this._geotiff, options);
-              };
-            }
-            this.toCanvas = function (options) {
-              return toCanvas(this, options);
-            };
-            resolve(this);
-          };
-          if (this._web_worker_is_available && !this.readOnDemand) {
-            const worker = new worker_namespaceObject["default"](); // Replace 'worker.js' with the path to your worker file
-            worker.onmessage = e => {
-              if (debug) console.log('main thread received message:', e);
-              if (e.data.error) reject(e.data.error);else parseDataDone(e.data);
-            };
-            worker.onerror = e => {
-              if (debug) console.log('main thread received error:', e);
-              reject(e);
-            };
-            if (debug) console.log('about to postMessage');
-            if (this._data instanceof ArrayBuffer) {
-              worker.postMessage(parseDataArgs, [this._data]);
-            } else {
-              worker.postMessage(parseDataArgs);
-            }
-          } else {
-            if (debug && !this._web_worker_is_available) console.log('web worker is not available');
-            parseData(parseDataArgs, debug).then(result => {
-              if (debug) console.log('result:', result);
-              parseDataDone(result);
-            }).catch(reject);
-          }
-        } else {
-          reject('couldn\'t find a way to parse');
-        }
-      });
-    });
-  }
-}
-const parseGeoraster = function (input, metadata, debug) {
-  let options = arguments.length > 3 && arguments[3] !== undefined ? arguments[3] : {};
-  if (debug) console.log('starting parseGeoraster with ', input, metadata);
-  if (input === undefined) {
-    const errorMessage = '[Georaster.parseGeoraster] Error. You passed in undefined to parseGeoraster. We can\'t make a raster out of nothing!';
-    throw Error(errorMessage);
-  }
-  return new GeoRaster(input, metadata, debug, options).initialize(debug);
+const fieldTagTypes = {
+  256: 'SHORT',
+  257: 'SHORT',
+  258: 'SHORT',
+  259: 'SHORT',
+  262: 'SHORT',
+  273: 'LONG',
+  274: 'SHORT',
+  277: 'SHORT',
+  278: 'LONG',
+  279: 'LONG',
+  282: 'RATIONAL',
+  283: 'RATIONAL',
+  284: 'SHORT',
+  286: 'SHORT',
+  287: 'RATIONAL',
+  296: 'SHORT',
+  297: 'SHORT',
+  305: 'ASCII',
+  306: 'ASCII',
+  338: 'SHORT',
+  339: 'SHORT',
+  513: 'LONG',
+  514: 'LONG',
+  1024: 'SHORT',
+  1025: 'SHORT',
+  2048: 'SHORT',
+  2049: 'ASCII',
+  3072: 'SHORT',
+  3073: 'ASCII',
+  33550: 'DOUBLE',
+  33922: 'DOUBLE',
+  34264: 'DOUBLE',
+  34665: 'LONG',
+  34735: 'SHORT',
+  34736: 'DOUBLE',
+  34737: 'ASCII',
+  42113: 'ASCII'
 };
-if ( true && typeof module.exports !== 'undefined') {
-  module.exports = parseGeoraster;
+const arrayFields = [fieldTags.BitsPerSample, fieldTags.ExtraSamples, fieldTags.SampleFormat, fieldTags.StripByteCounts, fieldTags.StripOffsets, fieldTags.StripRowCounts, fieldTags.TileByteCounts, fieldTags.TileOffsets, fieldTags.SubIFDs];
+const fieldTypeNames = {
+  0x0001: 'BYTE',
+  0x0002: 'ASCII',
+  0x0003: 'SHORT',
+  0x0004: 'LONG',
+  0x0005: 'RATIONAL',
+  0x0006: 'SBYTE',
+  0x0007: 'UNDEFINED',
+  0x0008: 'SSHORT',
+  0x0009: 'SLONG',
+  0x000A: 'SRATIONAL',
+  0x000B: 'FLOAT',
+  0x000C: 'DOUBLE',
+  // IFD offset, suggested by https://owl.phy.queensu.ca/~phil/exiftool/standards.html
+  0x000D: 'IFD',
+  // introduced by BigTIFF
+  0x0010: 'LONG8',
+  0x0011: 'SLONG8',
+  0x0012: 'IFD8'
+};
+const fieldTypes = {};
+for (const key in fieldTypeNames) {
+  if (fieldTypeNames.hasOwnProperty(key)) {
+    fieldTypes[fieldTypeNames[key]] = parseInt(key, 10);
+  }
 }
-
-/*
-    The following code allows you to use GeoRaster without requiring
-*/
-
-if (typeof window !== 'undefined') {
-  window['parseGeoraster'] = parseGeoraster;
-} else if (typeof self !== 'undefined') {
-  self['parseGeoraster'] = parseGeoraster; // jshint ignore:line
+const photometricInterpretations = {
+  WhiteIsZero: 0,
+  BlackIsZero: 1,
+  RGB: 2,
+  Palette: 3,
+  TransparencyMask: 4,
+  CMYK: 5,
+  YCbCr: 6,
+  CIELab: 8,
+  ICCLab: 9
+};
+const ExtraSamplesValues = {
+  Unspecified: 0,
+  Assocalpha: 1,
+  Unassalpha: 2
+};
+const LercParameters = {
+  Version: 0,
+  AddCompression: 1
+};
+const LercAddCompression = {
+  None: 0,
+  Deflate: 1,
+  Zstandard: 2
+};
+const geoKeyNames = {
+  1024: 'GTModelTypeGeoKey',
+  1025: 'GTRasterTypeGeoKey',
+  1026: 'GTCitationGeoKey',
+  2048: 'GeographicTypeGeoKey',
+  2049: 'GeogCitationGeoKey',
+  2050: 'GeogGeodeticDatumGeoKey',
+  2051: 'GeogPrimeMeridianGeoKey',
+  2052: 'GeogLinearUnitsGeoKey',
+  2053: 'GeogLinearUnitSizeGeoKey',
+  2054: 'GeogAngularUnitsGeoKey',
+  2055: 'GeogAngularUnitSizeGeoKey',
+  2056: 'GeogEllipsoidGeoKey',
+  2057: 'GeogSemiMajorAxisGeoKey',
+  2058: 'GeogSemiMinorAxisGeoKey',
+  2059: 'GeogInvFlatteningGeoKey',
+  2060: 'GeogAzimuthUnitsGeoKey',
+  2061: 'GeogPrimeMeridianLongGeoKey',
+  2062: 'GeogTOWGS84GeoKey',
+  3072: 'ProjectedCSTypeGeoKey',
+  3073: 'PCSCitationGeoKey',
+  3074: 'ProjectionGeoKey',
+  3075: 'ProjCoordTransGeoKey',
+  3076: 'ProjLinearUnitsGeoKey',
+  3077: 'ProjLinearUnitSizeGeoKey',
+  3078: 'ProjStdParallel1GeoKey',
+  3079: 'ProjStdParallel2GeoKey',
+  3080: 'ProjNatOriginLongGeoKey',
+  3081: 'ProjNatOriginLatGeoKey',
+  3082: 'ProjFalseEastingGeoKey',
+  3083: 'ProjFalseNorthingGeoKey',
+  3084: 'ProjFalseOriginLongGeoKey',
+  3085: 'ProjFalseOriginLatGeoKey',
+  3086: 'ProjFalseOriginEastingGeoKey',
+  3087: 'ProjFalseOriginNorthingGeoKey',
+  3088: 'ProjCenterLongGeoKey',
+  3089: 'ProjCenterLatGeoKey',
+  3090: 'ProjCenterEastingGeoKey',
+  3091: 'ProjCenterNorthingGeoKey',
+  3092: 'ProjScaleAtNatOriginGeoKey',
+  3093: 'ProjScaleAtCenterGeoKey',
+  3094: 'ProjAzimuthAngleGeoKey',
+  3095: 'ProjStraightVertPoleLongGeoKey',
+  3096: 'ProjRectifiedGridAngleGeoKey',
+  4096: 'VerticalCSTypeGeoKey',
+  4097: 'VerticalCitationGeoKey',
+  4098: 'VerticalDatumGeoKey',
+  4099: 'VerticalUnitsGeoKey'
+};
+const geoKeys = {};
+for (const key in geoKeyNames) {
+  if (geoKeyNames.hasOwnProperty(key)) {
+    geoKeys[geoKeyNames[key]] = parseInt(key, 10);
+  }
 }
 
 /***/ }),
 
-/***/ 2347:
+/***/ 8075:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(453);
+
+var callBind = __webpack_require__(487);
+
+var $indexOf = callBind(GetIntrinsic('String.prototype.indexOf'));
+
+module.exports = function callBoundIntrinsic(name, allowMissing) {
+	var intrinsic = GetIntrinsic(name, !!allowMissing);
+	if (typeof intrinsic === 'function' && $indexOf(name, '.prototype.') > -1) {
+		return callBind(intrinsic);
+	}
+	return intrinsic;
+};
+
+
+/***/ }),
+
+/***/ 487:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var bind = __webpack_require__(6743);
+var GetIntrinsic = __webpack_require__(453);
+var setFunctionLength = __webpack_require__(6897);
+
+var $TypeError = __webpack_require__(9675);
+var $apply = GetIntrinsic('%Function.prototype.apply%');
+var $call = GetIntrinsic('%Function.prototype.call%');
+var $reflectApply = GetIntrinsic('%Reflect.apply%', true) || bind.call($call, $apply);
+
+var $defineProperty = __webpack_require__(655);
+var $max = GetIntrinsic('%Math.max%');
+
+module.exports = function callBind(originalFunction) {
+	if (typeof originalFunction !== 'function') {
+		throw new $TypeError('a function is required');
+	}
+	var func = $reflectApply(bind, $call, arguments);
+	return setFunctionLength(
+		func,
+		1 + $max(0, originalFunction.length - (arguments.length - 1)),
+		true
+	);
+};
+
+var applyBind = function applyBind() {
+	return $reflectApply(bind, $apply, arguments);
+};
+
+if ($defineProperty) {
+	$defineProperty(module.exports, 'apply', { value: applyBind });
+} else {
+	module.exports.apply = applyBind;
+}
+
+
+/***/ }),
+
+/***/ 41:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $defineProperty = __webpack_require__(655);
+
+var $SyntaxError = __webpack_require__(8068);
+var $TypeError = __webpack_require__(9675);
+
+var gopd = __webpack_require__(5795);
+
+/** @type {import('.')} */
+module.exports = function defineDataProperty(
+	obj,
+	property,
+	value
+) {
+	if (!obj || (typeof obj !== 'object' && typeof obj !== 'function')) {
+		throw new $TypeError('`obj` must be an object or a function`');
+	}
+	if (typeof property !== 'string' && typeof property !== 'symbol') {
+		throw new $TypeError('`property` must be a string or a symbol`');
+	}
+	if (arguments.length > 3 && typeof arguments[3] !== 'boolean' && arguments[3] !== null) {
+		throw new $TypeError('`nonEnumerable`, if provided, must be a boolean or null');
+	}
+	if (arguments.length > 4 && typeof arguments[4] !== 'boolean' && arguments[4] !== null) {
+		throw new $TypeError('`nonWritable`, if provided, must be a boolean or null');
+	}
+	if (arguments.length > 5 && typeof arguments[5] !== 'boolean' && arguments[5] !== null) {
+		throw new $TypeError('`nonConfigurable`, if provided, must be a boolean or null');
+	}
+	if (arguments.length > 6 && typeof arguments[6] !== 'boolean') {
+		throw new $TypeError('`loose`, if provided, must be a boolean');
+	}
+
+	var nonEnumerable = arguments.length > 3 ? arguments[3] : null;
+	var nonWritable = arguments.length > 4 ? arguments[4] : null;
+	var nonConfigurable = arguments.length > 5 ? arguments[5] : null;
+	var loose = arguments.length > 6 ? arguments[6] : false;
+
+	/* @type {false | TypedPropertyDescriptor<unknown>} */
+	var desc = !!gopd && gopd(obj, property);
+
+	if ($defineProperty) {
+		$defineProperty(obj, property, {
+			configurable: nonConfigurable === null && desc ? desc.configurable : !nonConfigurable,
+			enumerable: nonEnumerable === null && desc ? desc.enumerable : !nonEnumerable,
+			value: value,
+			writable: nonWritable === null && desc ? desc.writable : !nonWritable
+		});
+	} else if (loose || (!nonEnumerable && !nonWritable && !nonConfigurable)) {
+		// must fall back to [[Set]], and was not explicitly asked to make non-enumerable, non-writable, or non-configurable
+		obj[property] = value; // eslint-disable-line no-param-reassign
+	} else {
+		throw new $SyntaxError('This environment does not support defining a property as non-configurable, non-writable, or non-enumerable.');
+	}
+};
+
+
+/***/ }),
+
+/***/ 655:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(453);
+
+/** @type {import('.')} */
+var $defineProperty = GetIntrinsic('%Object.defineProperty%', true) || false;
+if ($defineProperty) {
+	try {
+		$defineProperty({}, 'a', { value: 1 });
+	} catch (e) {
+		// IE 8 has a broken defineProperty
+		$defineProperty = false;
+	}
+}
+
+module.exports = $defineProperty;
+
+
+/***/ }),
+
+/***/ 1237:
 /***/ ((module) => {
 
-function countIn1D(array) {
-  return array.reduce((counts, value) => {
-    if (counts[value] === undefined) {
-      counts[value] = 1;
-    } else {
-      counts[value]++;
+"use strict";
+
+
+/** @type {import('./eval')} */
+module.exports = EvalError;
+
+
+/***/ }),
+
+/***/ 9383:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('.')} */
+module.exports = Error;
+
+
+/***/ }),
+
+/***/ 9290:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./range')} */
+module.exports = RangeError;
+
+
+/***/ }),
+
+/***/ 9538:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./ref')} */
+module.exports = ReferenceError;
+
+
+/***/ }),
+
+/***/ 8068:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./syntax')} */
+module.exports = SyntaxError;
+
+
+/***/ }),
+
+/***/ 9675:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./type')} */
+module.exports = TypeError;
+
+
+/***/ }),
+
+/***/ 5345:
+/***/ ((module) => {
+
+"use strict";
+
+
+/** @type {import('./uri')} */
+module.exports = URIError;
+
+
+/***/ }),
+
+/***/ 9353:
+/***/ ((module) => {
+
+"use strict";
+
+
+/* eslint no-invalid-this: 1 */
+
+var ERROR_MESSAGE = 'Function.prototype.bind called on incompatible ';
+var toStr = Object.prototype.toString;
+var max = Math.max;
+var funcType = '[object Function]';
+
+var concatty = function concatty(a, b) {
+    var arr = [];
+
+    for (var i = 0; i < a.length; i += 1) {
+        arr[i] = a[i];
     }
-    return counts;
-  }, {});
-}
-function countIn2D(rows) {
-  return rows.reduce((counts, values) => {
-    values.forEach(value => {
-      if (counts[value] === undefined) {
-        counts[value] = 1;
-      } else {
-        counts[value]++;
-      }
-    });
-    return counts;
-  }, {});
+    for (var j = 0; j < b.length; j += 1) {
+        arr[j + a.length] = b[j];
+    }
+
+    return arr;
+};
+
+var slicy = function slicy(arrLike, offset) {
+    var arr = [];
+    for (var i = offset || 0, j = 0; i < arrLike.length; i += 1, j += 1) {
+        arr[j] = arrLike[i];
+    }
+    return arr;
+};
+
+var joiny = function (arr, joiner) {
+    var str = '';
+    for (var i = 0; i < arr.length; i += 1) {
+        str += arr[i];
+        if (i + 1 < arr.length) {
+            str += joiner;
+        }
+    }
+    return str;
+};
+
+module.exports = function bind(that) {
+    var target = this;
+    if (typeof target !== 'function' || toStr.apply(target) !== funcType) {
+        throw new TypeError(ERROR_MESSAGE + target);
+    }
+    var args = slicy(arguments, 1);
+
+    var bound;
+    var binder = function () {
+        if (this instanceof bound) {
+            var result = target.apply(
+                this,
+                concatty(args, arguments)
+            );
+            if (Object(result) === result) {
+                return result;
+            }
+            return this;
+        }
+        return target.apply(
+            that,
+            concatty(args, arguments)
+        );
+
+    };
+
+    var boundLength = max(0, target.length - args.length);
+    var boundArgs = [];
+    for (var i = 0; i < boundLength; i++) {
+        boundArgs[i] = '$' + i;
+    }
+
+    bound = Function('binder', 'return function (' + joiny(boundArgs, ',') + '){ return binder.apply(this,arguments); }')(binder);
+
+    if (target.prototype) {
+        var Empty = function Empty() {};
+        Empty.prototype = target.prototype;
+        bound.prototype = new Empty();
+        Empty.prototype = null;
+    }
+
+    return bound;
+};
+
+
+/***/ }),
+
+/***/ 6743:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var implementation = __webpack_require__(9353);
+
+module.exports = Function.prototype.bind || implementation;
+
+
+/***/ }),
+
+/***/ 453:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var undefined;
+
+var $Error = __webpack_require__(9383);
+var $EvalError = __webpack_require__(1237);
+var $RangeError = __webpack_require__(9290);
+var $ReferenceError = __webpack_require__(9538);
+var $SyntaxError = __webpack_require__(8068);
+var $TypeError = __webpack_require__(9675);
+var $URIError = __webpack_require__(5345);
+
+var $Function = Function;
+
+// eslint-disable-next-line consistent-return
+var getEvalledConstructor = function (expressionSyntax) {
+	try {
+		return $Function('"use strict"; return (' + expressionSyntax + ').constructor;')();
+	} catch (e) {}
+};
+
+var $gOPD = Object.getOwnPropertyDescriptor;
+if ($gOPD) {
+	try {
+		$gOPD({}, '');
+	} catch (e) {
+		$gOPD = null; // this is IE 8, which has a broken gOPD
+	}
 }
 
-/*
-Takes in a flattened one dimensional typed array
-representing two-dimensional pixel values
-and returns an array of typed arrays with the same buffer.
-*/
-function unflatten(valuesInOneDimension, size) {
-  const {
-    height,
-    width
-  } = size;
-  const valuesInTwoDimensions = [];
-  for (let y = 0; y < height; y++) {
-    const start = y * width;
-    const end = start + width;
-    valuesInTwoDimensions.push(valuesInOneDimension.subarray(start, end));
-  }
-  return valuesInTwoDimensions;
-}
-module.exports = {
-  countIn1D,
-  countIn2D,
-  unflatten
+var throwTypeError = function () {
+	throw new $TypeError();
 };
+var ThrowTypeError = $gOPD
+	? (function () {
+		try {
+			// eslint-disable-next-line no-unused-expressions, no-caller, no-restricted-properties
+			arguments.callee; // IE 8 does not throw here
+			return throwTypeError;
+		} catch (calleeThrows) {
+			try {
+				// IE 8 throws on Object.getOwnPropertyDescriptor(arguments, '')
+				return $gOPD(arguments, 'callee').get;
+			} catch (gOPDthrows) {
+				return throwTypeError;
+			}
+		}
+	}())
+	: throwTypeError;
+
+var hasSymbols = __webpack_require__(4039)();
+var hasProto = __webpack_require__(24)();
+
+var getProto = Object.getPrototypeOf || (
+	hasProto
+		? function (x) { return x.__proto__; } // eslint-disable-line no-proto
+		: null
+);
+
+var needsEval = {};
+
+var TypedArray = typeof Uint8Array === 'undefined' || !getProto ? undefined : getProto(Uint8Array);
+
+var INTRINSICS = {
+	__proto__: null,
+	'%AggregateError%': typeof AggregateError === 'undefined' ? undefined : AggregateError,
+	'%Array%': Array,
+	'%ArrayBuffer%': typeof ArrayBuffer === 'undefined' ? undefined : ArrayBuffer,
+	'%ArrayIteratorPrototype%': hasSymbols && getProto ? getProto([][Symbol.iterator]()) : undefined,
+	'%AsyncFromSyncIteratorPrototype%': undefined,
+	'%AsyncFunction%': needsEval,
+	'%AsyncGenerator%': needsEval,
+	'%AsyncGeneratorFunction%': needsEval,
+	'%AsyncIteratorPrototype%': needsEval,
+	'%Atomics%': typeof Atomics === 'undefined' ? undefined : Atomics,
+	'%BigInt%': typeof BigInt === 'undefined' ? undefined : BigInt,
+	'%BigInt64Array%': typeof BigInt64Array === 'undefined' ? undefined : BigInt64Array,
+	'%BigUint64Array%': typeof BigUint64Array === 'undefined' ? undefined : BigUint64Array,
+	'%Boolean%': Boolean,
+	'%DataView%': typeof DataView === 'undefined' ? undefined : DataView,
+	'%Date%': Date,
+	'%decodeURI%': decodeURI,
+	'%decodeURIComponent%': decodeURIComponent,
+	'%encodeURI%': encodeURI,
+	'%encodeURIComponent%': encodeURIComponent,
+	'%Error%': $Error,
+	'%eval%': eval, // eslint-disable-line no-eval
+	'%EvalError%': $EvalError,
+	'%Float32Array%': typeof Float32Array === 'undefined' ? undefined : Float32Array,
+	'%Float64Array%': typeof Float64Array === 'undefined' ? undefined : Float64Array,
+	'%FinalizationRegistry%': typeof FinalizationRegistry === 'undefined' ? undefined : FinalizationRegistry,
+	'%Function%': $Function,
+	'%GeneratorFunction%': needsEval,
+	'%Int8Array%': typeof Int8Array === 'undefined' ? undefined : Int8Array,
+	'%Int16Array%': typeof Int16Array === 'undefined' ? undefined : Int16Array,
+	'%Int32Array%': typeof Int32Array === 'undefined' ? undefined : Int32Array,
+	'%isFinite%': isFinite,
+	'%isNaN%': isNaN,
+	'%IteratorPrototype%': hasSymbols && getProto ? getProto(getProto([][Symbol.iterator]())) : undefined,
+	'%JSON%': typeof JSON === 'object' ? JSON : undefined,
+	'%Map%': typeof Map === 'undefined' ? undefined : Map,
+	'%MapIteratorPrototype%': typeof Map === 'undefined' || !hasSymbols || !getProto ? undefined : getProto(new Map()[Symbol.iterator]()),
+	'%Math%': Math,
+	'%Number%': Number,
+	'%Object%': Object,
+	'%parseFloat%': parseFloat,
+	'%parseInt%': parseInt,
+	'%Promise%': typeof Promise === 'undefined' ? undefined : Promise,
+	'%Proxy%': typeof Proxy === 'undefined' ? undefined : Proxy,
+	'%RangeError%': $RangeError,
+	'%ReferenceError%': $ReferenceError,
+	'%Reflect%': typeof Reflect === 'undefined' ? undefined : Reflect,
+	'%RegExp%': RegExp,
+	'%Set%': typeof Set === 'undefined' ? undefined : Set,
+	'%SetIteratorPrototype%': typeof Set === 'undefined' || !hasSymbols || !getProto ? undefined : getProto(new Set()[Symbol.iterator]()),
+	'%SharedArrayBuffer%': typeof SharedArrayBuffer === 'undefined' ? undefined : SharedArrayBuffer,
+	'%String%': String,
+	'%StringIteratorPrototype%': hasSymbols && getProto ? getProto(''[Symbol.iterator]()) : undefined,
+	'%Symbol%': hasSymbols ? Symbol : undefined,
+	'%SyntaxError%': $SyntaxError,
+	'%ThrowTypeError%': ThrowTypeError,
+	'%TypedArray%': TypedArray,
+	'%TypeError%': $TypeError,
+	'%Uint8Array%': typeof Uint8Array === 'undefined' ? undefined : Uint8Array,
+	'%Uint8ClampedArray%': typeof Uint8ClampedArray === 'undefined' ? undefined : Uint8ClampedArray,
+	'%Uint16Array%': typeof Uint16Array === 'undefined' ? undefined : Uint16Array,
+	'%Uint32Array%': typeof Uint32Array === 'undefined' ? undefined : Uint32Array,
+	'%URIError%': $URIError,
+	'%WeakMap%': typeof WeakMap === 'undefined' ? undefined : WeakMap,
+	'%WeakRef%': typeof WeakRef === 'undefined' ? undefined : WeakRef,
+	'%WeakSet%': typeof WeakSet === 'undefined' ? undefined : WeakSet
+};
+
+if (getProto) {
+	try {
+		null.error; // eslint-disable-line no-unused-expressions
+	} catch (e) {
+		// https://github.com/tc39/proposal-shadowrealm/pull/384#issuecomment-1364264229
+		var errorProto = getProto(getProto(e));
+		INTRINSICS['%Error.prototype%'] = errorProto;
+	}
+}
+
+var doEval = function doEval(name) {
+	var value;
+	if (name === '%AsyncFunction%') {
+		value = getEvalledConstructor('async function () {}');
+	} else if (name === '%GeneratorFunction%') {
+		value = getEvalledConstructor('function* () {}');
+	} else if (name === '%AsyncGeneratorFunction%') {
+		value = getEvalledConstructor('async function* () {}');
+	} else if (name === '%AsyncGenerator%') {
+		var fn = doEval('%AsyncGeneratorFunction%');
+		if (fn) {
+			value = fn.prototype;
+		}
+	} else if (name === '%AsyncIteratorPrototype%') {
+		var gen = doEval('%AsyncGenerator%');
+		if (gen && getProto) {
+			value = getProto(gen.prototype);
+		}
+	}
+
+	INTRINSICS[name] = value;
+
+	return value;
+};
+
+var LEGACY_ALIASES = {
+	__proto__: null,
+	'%ArrayBufferPrototype%': ['ArrayBuffer', 'prototype'],
+	'%ArrayPrototype%': ['Array', 'prototype'],
+	'%ArrayProto_entries%': ['Array', 'prototype', 'entries'],
+	'%ArrayProto_forEach%': ['Array', 'prototype', 'forEach'],
+	'%ArrayProto_keys%': ['Array', 'prototype', 'keys'],
+	'%ArrayProto_values%': ['Array', 'prototype', 'values'],
+	'%AsyncFunctionPrototype%': ['AsyncFunction', 'prototype'],
+	'%AsyncGenerator%': ['AsyncGeneratorFunction', 'prototype'],
+	'%AsyncGeneratorPrototype%': ['AsyncGeneratorFunction', 'prototype', 'prototype'],
+	'%BooleanPrototype%': ['Boolean', 'prototype'],
+	'%DataViewPrototype%': ['DataView', 'prototype'],
+	'%DatePrototype%': ['Date', 'prototype'],
+	'%ErrorPrototype%': ['Error', 'prototype'],
+	'%EvalErrorPrototype%': ['EvalError', 'prototype'],
+	'%Float32ArrayPrototype%': ['Float32Array', 'prototype'],
+	'%Float64ArrayPrototype%': ['Float64Array', 'prototype'],
+	'%FunctionPrototype%': ['Function', 'prototype'],
+	'%Generator%': ['GeneratorFunction', 'prototype'],
+	'%GeneratorPrototype%': ['GeneratorFunction', 'prototype', 'prototype'],
+	'%Int8ArrayPrototype%': ['Int8Array', 'prototype'],
+	'%Int16ArrayPrototype%': ['Int16Array', 'prototype'],
+	'%Int32ArrayPrototype%': ['Int32Array', 'prototype'],
+	'%JSONParse%': ['JSON', 'parse'],
+	'%JSONStringify%': ['JSON', 'stringify'],
+	'%MapPrototype%': ['Map', 'prototype'],
+	'%NumberPrototype%': ['Number', 'prototype'],
+	'%ObjectPrototype%': ['Object', 'prototype'],
+	'%ObjProto_toString%': ['Object', 'prototype', 'toString'],
+	'%ObjProto_valueOf%': ['Object', 'prototype', 'valueOf'],
+	'%PromisePrototype%': ['Promise', 'prototype'],
+	'%PromiseProto_then%': ['Promise', 'prototype', 'then'],
+	'%Promise_all%': ['Promise', 'all'],
+	'%Promise_reject%': ['Promise', 'reject'],
+	'%Promise_resolve%': ['Promise', 'resolve'],
+	'%RangeErrorPrototype%': ['RangeError', 'prototype'],
+	'%ReferenceErrorPrototype%': ['ReferenceError', 'prototype'],
+	'%RegExpPrototype%': ['RegExp', 'prototype'],
+	'%SetPrototype%': ['Set', 'prototype'],
+	'%SharedArrayBufferPrototype%': ['SharedArrayBuffer', 'prototype'],
+	'%StringPrototype%': ['String', 'prototype'],
+	'%SymbolPrototype%': ['Symbol', 'prototype'],
+	'%SyntaxErrorPrototype%': ['SyntaxError', 'prototype'],
+	'%TypedArrayPrototype%': ['TypedArray', 'prototype'],
+	'%TypeErrorPrototype%': ['TypeError', 'prototype'],
+	'%Uint8ArrayPrototype%': ['Uint8Array', 'prototype'],
+	'%Uint8ClampedArrayPrototype%': ['Uint8ClampedArray', 'prototype'],
+	'%Uint16ArrayPrototype%': ['Uint16Array', 'prototype'],
+	'%Uint32ArrayPrototype%': ['Uint32Array', 'prototype'],
+	'%URIErrorPrototype%': ['URIError', 'prototype'],
+	'%WeakMapPrototype%': ['WeakMap', 'prototype'],
+	'%WeakSetPrototype%': ['WeakSet', 'prototype']
+};
+
+var bind = __webpack_require__(6743);
+var hasOwn = __webpack_require__(9957);
+var $concat = bind.call(Function.call, Array.prototype.concat);
+var $spliceApply = bind.call(Function.apply, Array.prototype.splice);
+var $replace = bind.call(Function.call, String.prototype.replace);
+var $strSlice = bind.call(Function.call, String.prototype.slice);
+var $exec = bind.call(Function.call, RegExp.prototype.exec);
+
+/* adapted from https://github.com/lodash/lodash/blob/4.17.15/dist/lodash.js#L6735-L6744 */
+var rePropName = /[^%.[\]]+|\[(?:(-?\d+(?:\.\d+)?)|(["'])((?:(?!\2)[^\\]|\\.)*?)\2)\]|(?=(?:\.|\[\])(?:\.|\[\]|%$))/g;
+var reEscapeChar = /\\(\\)?/g; /** Used to match backslashes in property paths. */
+var stringToPath = function stringToPath(string) {
+	var first = $strSlice(string, 0, 1);
+	var last = $strSlice(string, -1);
+	if (first === '%' && last !== '%') {
+		throw new $SyntaxError('invalid intrinsic syntax, expected closing `%`');
+	} else if (last === '%' && first !== '%') {
+		throw new $SyntaxError('invalid intrinsic syntax, expected opening `%`');
+	}
+	var result = [];
+	$replace(string, rePropName, function (match, number, quote, subString) {
+		result[result.length] = quote ? $replace(subString, reEscapeChar, '$1') : number || match;
+	});
+	return result;
+};
+/* end adaptation */
+
+var getBaseIntrinsic = function getBaseIntrinsic(name, allowMissing) {
+	var intrinsicName = name;
+	var alias;
+	if (hasOwn(LEGACY_ALIASES, intrinsicName)) {
+		alias = LEGACY_ALIASES[intrinsicName];
+		intrinsicName = '%' + alias[0] + '%';
+	}
+
+	if (hasOwn(INTRINSICS, intrinsicName)) {
+		var value = INTRINSICS[intrinsicName];
+		if (value === needsEval) {
+			value = doEval(intrinsicName);
+		}
+		if (typeof value === 'undefined' && !allowMissing) {
+			throw new $TypeError('intrinsic ' + name + ' exists, but is not available. Please file an issue!');
+		}
+
+		return {
+			alias: alias,
+			name: intrinsicName,
+			value: value
+		};
+	}
+
+	throw new $SyntaxError('intrinsic ' + name + ' does not exist!');
+};
+
+module.exports = function GetIntrinsic(name, allowMissing) {
+	if (typeof name !== 'string' || name.length === 0) {
+		throw new $TypeError('intrinsic name must be a non-empty string');
+	}
+	if (arguments.length > 1 && typeof allowMissing !== 'boolean') {
+		throw new $TypeError('"allowMissing" argument must be a boolean');
+	}
+
+	if ($exec(/^%?[^%]*%?$/, name) === null) {
+		throw new $SyntaxError('`%` may not be present anywhere but at the beginning and end of the intrinsic name');
+	}
+	var parts = stringToPath(name);
+	var intrinsicBaseName = parts.length > 0 ? parts[0] : '';
+
+	var intrinsic = getBaseIntrinsic('%' + intrinsicBaseName + '%', allowMissing);
+	var intrinsicRealName = intrinsic.name;
+	var value = intrinsic.value;
+	var skipFurtherCaching = false;
+
+	var alias = intrinsic.alias;
+	if (alias) {
+		intrinsicBaseName = alias[0];
+		$spliceApply(parts, $concat([0, 1], alias));
+	}
+
+	for (var i = 1, isOwn = true; i < parts.length; i += 1) {
+		var part = parts[i];
+		var first = $strSlice(part, 0, 1);
+		var last = $strSlice(part, -1);
+		if (
+			(
+				(first === '"' || first === "'" || first === '`')
+				|| (last === '"' || last === "'" || last === '`')
+			)
+			&& first !== last
+		) {
+			throw new $SyntaxError('property names with quotes must have matching quotes');
+		}
+		if (part === 'constructor' || !isOwn) {
+			skipFurtherCaching = true;
+		}
+
+		intrinsicBaseName += '.' + part;
+		intrinsicRealName = '%' + intrinsicBaseName + '%';
+
+		if (hasOwn(INTRINSICS, intrinsicRealName)) {
+			value = INTRINSICS[intrinsicRealName];
+		} else if (value != null) {
+			if (!(part in value)) {
+				if (!allowMissing) {
+					throw new $TypeError('base intrinsic for ' + name + ' exists, but the property is not available.');
+				}
+				return void undefined;
+			}
+			if ($gOPD && (i + 1) >= parts.length) {
+				var desc = $gOPD(value, part);
+				isOwn = !!desc;
+
+				// By convention, when a data property is converted to an accessor
+				// property to emulate a data property that does not suffer from
+				// the override mistake, that accessor's getter is marked with
+				// an `originalValue` property. Here, when we detect this, we
+				// uphold the illusion by pretending to see that original data
+				// property, i.e., returning the value rather than the getter
+				// itself.
+				if (isOwn && 'get' in desc && !('originalValue' in desc.get)) {
+					value = desc.get;
+				} else {
+					value = value[part];
+				}
+			} else {
+				isOwn = hasOwn(value, part);
+				value = value[part];
+			}
+
+			if (isOwn && !skipFurtherCaching) {
+				INTRINSICS[intrinsicRealName] = value;
+			}
+		}
+	}
+	return value;
+};
+
+
+/***/ }),
+
+/***/ 5795:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(453);
+
+var $gOPD = GetIntrinsic('%Object.getOwnPropertyDescriptor%', true);
+
+if ($gOPD) {
+	try {
+		$gOPD([], 'length');
+	} catch (e) {
+		// IE 8 has a broken gOPD
+		$gOPD = null;
+	}
+}
+
+module.exports = $gOPD;
+
+
+/***/ }),
+
+/***/ 592:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var $defineProperty = __webpack_require__(655);
+
+var hasPropertyDescriptors = function hasPropertyDescriptors() {
+	return !!$defineProperty;
+};
+
+hasPropertyDescriptors.hasArrayLengthDefineBug = function hasArrayLengthDefineBug() {
+	// node v0.6 has a bug where array lengths can be Set but not Defined
+	if (!$defineProperty) {
+		return null;
+	}
+	try {
+		return $defineProperty([], 'length', { value: 1 }).length !== 1;
+	} catch (e) {
+		// In Firefox 4-22, defining length on an array throws an exception.
+		return true;
+	}
+};
+
+module.exports = hasPropertyDescriptors;
+
+
+/***/ }),
+
+/***/ 24:
+/***/ ((module) => {
+
+"use strict";
+
+
+var test = {
+	__proto__: null,
+	foo: {}
+};
+
+var $Object = Object;
+
+/** @type {import('.')} */
+module.exports = function hasProto() {
+	// @ts-expect-error: TS errors on an inherited property for some reason
+	return { __proto__: test }.foo === test.foo
+		&& !(test instanceof $Object);
+};
+
+
+/***/ }),
+
+/***/ 4039:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var origSymbol = typeof Symbol !== 'undefined' && Symbol;
+var hasSymbolSham = __webpack_require__(1333);
+
+module.exports = function hasNativeSymbols() {
+	if (typeof origSymbol !== 'function') { return false; }
+	if (typeof Symbol !== 'function') { return false; }
+	if (typeof origSymbol('foo') !== 'symbol') { return false; }
+	if (typeof Symbol('bar') !== 'symbol') { return false; }
+
+	return hasSymbolSham();
+};
+
+
+/***/ }),
+
+/***/ 1333:
+/***/ ((module) => {
+
+"use strict";
+
+
+/* eslint complexity: [2, 18], max-statements: [2, 33] */
+module.exports = function hasSymbols() {
+	if (typeof Symbol !== 'function' || typeof Object.getOwnPropertySymbols !== 'function') { return false; }
+	if (typeof Symbol.iterator === 'symbol') { return true; }
+
+	var obj = {};
+	var sym = Symbol('test');
+	var symObj = Object(sym);
+	if (typeof sym === 'string') { return false; }
+
+	if (Object.prototype.toString.call(sym) !== '[object Symbol]') { return false; }
+	if (Object.prototype.toString.call(symObj) !== '[object Symbol]') { return false; }
+
+	// temp disabled per https://github.com/ljharb/object.assign/issues/17
+	// if (sym instanceof Symbol) { return false; }
+	// temp disabled per https://github.com/WebReflection/get-own-property-symbols/issues/4
+	// if (!(symObj instanceof Symbol)) { return false; }
+
+	// if (typeof Symbol.prototype.toString !== 'function') { return false; }
+	// if (String(sym) !== Symbol.prototype.toString.call(sym)) { return false; }
+
+	var symVal = 42;
+	obj[sym] = symVal;
+	for (sym in obj) { return false; } // eslint-disable-line no-restricted-syntax, no-unreachable-loop
+	if (typeof Object.keys === 'function' && Object.keys(obj).length !== 0) { return false; }
+
+	if (typeof Object.getOwnPropertyNames === 'function' && Object.getOwnPropertyNames(obj).length !== 0) { return false; }
+
+	var syms = Object.getOwnPropertySymbols(obj);
+	if (syms.length !== 1 || syms[0] !== sym) { return false; }
+
+	if (!Object.prototype.propertyIsEnumerable.call(obj, sym)) { return false; }
+
+	if (typeof Object.getOwnPropertyDescriptor === 'function') {
+		var descriptor = Object.getOwnPropertyDescriptor(obj, sym);
+		if (descriptor.value !== symVal || descriptor.enumerable !== true) { return false; }
+	}
+
+	return true;
+};
+
+
+/***/ }),
+
+/***/ 9957:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var call = Function.prototype.call;
+var $hasOwn = Object.prototype.hasOwnProperty;
+var bind = __webpack_require__(6743);
+
+/** @type {import('.')} */
+module.exports = bind.call(call, $hasOwn);
+
+
+/***/ }),
+
+/***/ 8859:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+var hasMap = typeof Map === 'function' && Map.prototype;
+var mapSizeDescriptor = Object.getOwnPropertyDescriptor && hasMap ? Object.getOwnPropertyDescriptor(Map.prototype, 'size') : null;
+var mapSize = hasMap && mapSizeDescriptor && typeof mapSizeDescriptor.get === 'function' ? mapSizeDescriptor.get : null;
+var mapForEach = hasMap && Map.prototype.forEach;
+var hasSet = typeof Set === 'function' && Set.prototype;
+var setSizeDescriptor = Object.getOwnPropertyDescriptor && hasSet ? Object.getOwnPropertyDescriptor(Set.prototype, 'size') : null;
+var setSize = hasSet && setSizeDescriptor && typeof setSizeDescriptor.get === 'function' ? setSizeDescriptor.get : null;
+var setForEach = hasSet && Set.prototype.forEach;
+var hasWeakMap = typeof WeakMap === 'function' && WeakMap.prototype;
+var weakMapHas = hasWeakMap ? WeakMap.prototype.has : null;
+var hasWeakSet = typeof WeakSet === 'function' && WeakSet.prototype;
+var weakSetHas = hasWeakSet ? WeakSet.prototype.has : null;
+var hasWeakRef = typeof WeakRef === 'function' && WeakRef.prototype;
+var weakRefDeref = hasWeakRef ? WeakRef.prototype.deref : null;
+var booleanValueOf = Boolean.prototype.valueOf;
+var objectToString = Object.prototype.toString;
+var functionToString = Function.prototype.toString;
+var $match = String.prototype.match;
+var $slice = String.prototype.slice;
+var $replace = String.prototype.replace;
+var $toUpperCase = String.prototype.toUpperCase;
+var $toLowerCase = String.prototype.toLowerCase;
+var $test = RegExp.prototype.test;
+var $concat = Array.prototype.concat;
+var $join = Array.prototype.join;
+var $arrSlice = Array.prototype.slice;
+var $floor = Math.floor;
+var bigIntValueOf = typeof BigInt === 'function' ? BigInt.prototype.valueOf : null;
+var gOPS = Object.getOwnPropertySymbols;
+var symToString = typeof Symbol === 'function' && typeof Symbol.iterator === 'symbol' ? Symbol.prototype.toString : null;
+var hasShammedSymbols = typeof Symbol === 'function' && typeof Symbol.iterator === 'object';
+// ie, `has-tostringtag/shams
+var toStringTag = typeof Symbol === 'function' && Symbol.toStringTag && (typeof Symbol.toStringTag === hasShammedSymbols ? 'object' : 'symbol')
+    ? Symbol.toStringTag
+    : null;
+var isEnumerable = Object.prototype.propertyIsEnumerable;
+
+var gPO = (typeof Reflect === 'function' ? Reflect.getPrototypeOf : Object.getPrototypeOf) || (
+    [].__proto__ === Array.prototype // eslint-disable-line no-proto
+        ? function (O) {
+            return O.__proto__; // eslint-disable-line no-proto
+        }
+        : null
+);
+
+function addNumericSeparator(num, str) {
+    if (
+        num === Infinity
+        || num === -Infinity
+        || num !== num
+        || (num && num > -1000 && num < 1000)
+        || $test.call(/e/, str)
+    ) {
+        return str;
+    }
+    var sepRegex = /[0-9](?=(?:[0-9]{3})+(?![0-9]))/g;
+    if (typeof num === 'number') {
+        var int = num < 0 ? -$floor(-num) : $floor(num); // trunc(num)
+        if (int !== num) {
+            var intStr = String(int);
+            var dec = $slice.call(str, intStr.length + 1);
+            return $replace.call(intStr, sepRegex, '$&_') + '.' + $replace.call($replace.call(dec, /([0-9]{3})/g, '$&_'), /_$/, '');
+        }
+    }
+    return $replace.call(str, sepRegex, '$&_');
+}
+
+var utilInspect = __webpack_require__(2634);
+var inspectCustom = utilInspect.custom;
+var inspectSymbol = isSymbol(inspectCustom) ? inspectCustom : null;
+
+module.exports = function inspect_(obj, options, depth, seen) {
+    var opts = options || {};
+
+    if (has(opts, 'quoteStyle') && (opts.quoteStyle !== 'single' && opts.quoteStyle !== 'double')) {
+        throw new TypeError('option "quoteStyle" must be "single" or "double"');
+    }
+    if (
+        has(opts, 'maxStringLength') && (typeof opts.maxStringLength === 'number'
+            ? opts.maxStringLength < 0 && opts.maxStringLength !== Infinity
+            : opts.maxStringLength !== null
+        )
+    ) {
+        throw new TypeError('option "maxStringLength", if provided, must be a positive integer, Infinity, or `null`');
+    }
+    var customInspect = has(opts, 'customInspect') ? opts.customInspect : true;
+    if (typeof customInspect !== 'boolean' && customInspect !== 'symbol') {
+        throw new TypeError('option "customInspect", if provided, must be `true`, `false`, or `\'symbol\'`');
+    }
+
+    if (
+        has(opts, 'indent')
+        && opts.indent !== null
+        && opts.indent !== '\t'
+        && !(parseInt(opts.indent, 10) === opts.indent && opts.indent > 0)
+    ) {
+        throw new TypeError('option "indent" must be "\\t", an integer > 0, or `null`');
+    }
+    if (has(opts, 'numericSeparator') && typeof opts.numericSeparator !== 'boolean') {
+        throw new TypeError('option "numericSeparator", if provided, must be `true` or `false`');
+    }
+    var numericSeparator = opts.numericSeparator;
+
+    if (typeof obj === 'undefined') {
+        return 'undefined';
+    }
+    if (obj === null) {
+        return 'null';
+    }
+    if (typeof obj === 'boolean') {
+        return obj ? 'true' : 'false';
+    }
+
+    if (typeof obj === 'string') {
+        return inspectString(obj, opts);
+    }
+    if (typeof obj === 'number') {
+        if (obj === 0) {
+            return Infinity / obj > 0 ? '0' : '-0';
+        }
+        var str = String(obj);
+        return numericSeparator ? addNumericSeparator(obj, str) : str;
+    }
+    if (typeof obj === 'bigint') {
+        var bigIntStr = String(obj) + 'n';
+        return numericSeparator ? addNumericSeparator(obj, bigIntStr) : bigIntStr;
+    }
+
+    var maxDepth = typeof opts.depth === 'undefined' ? 5 : opts.depth;
+    if (typeof depth === 'undefined') { depth = 0; }
+    if (depth >= maxDepth && maxDepth > 0 && typeof obj === 'object') {
+        return isArray(obj) ? '[Array]' : '[Object]';
+    }
+
+    var indent = getIndent(opts, depth);
+
+    if (typeof seen === 'undefined') {
+        seen = [];
+    } else if (indexOf(seen, obj) >= 0) {
+        return '[Circular]';
+    }
+
+    function inspect(value, from, noIndent) {
+        if (from) {
+            seen = $arrSlice.call(seen);
+            seen.push(from);
+        }
+        if (noIndent) {
+            var newOpts = {
+                depth: opts.depth
+            };
+            if (has(opts, 'quoteStyle')) {
+                newOpts.quoteStyle = opts.quoteStyle;
+            }
+            return inspect_(value, newOpts, depth + 1, seen);
+        }
+        return inspect_(value, opts, depth + 1, seen);
+    }
+
+    if (typeof obj === 'function' && !isRegExp(obj)) { // in older engines, regexes are callable
+        var name = nameOf(obj);
+        var keys = arrObjKeys(obj, inspect);
+        return '[Function' + (name ? ': ' + name : ' (anonymous)') + ']' + (keys.length > 0 ? ' { ' + $join.call(keys, ', ') + ' }' : '');
+    }
+    if (isSymbol(obj)) {
+        var symString = hasShammedSymbols ? $replace.call(String(obj), /^(Symbol\(.*\))_[^)]*$/, '$1') : symToString.call(obj);
+        return typeof obj === 'object' && !hasShammedSymbols ? markBoxed(symString) : symString;
+    }
+    if (isElement(obj)) {
+        var s = '<' + $toLowerCase.call(String(obj.nodeName));
+        var attrs = obj.attributes || [];
+        for (var i = 0; i < attrs.length; i++) {
+            s += ' ' + attrs[i].name + '=' + wrapQuotes(quote(attrs[i].value), 'double', opts);
+        }
+        s += '>';
+        if (obj.childNodes && obj.childNodes.length) { s += '...'; }
+        s += '</' + $toLowerCase.call(String(obj.nodeName)) + '>';
+        return s;
+    }
+    if (isArray(obj)) {
+        if (obj.length === 0) { return '[]'; }
+        var xs = arrObjKeys(obj, inspect);
+        if (indent && !singleLineValues(xs)) {
+            return '[' + indentedJoin(xs, indent) + ']';
+        }
+        return '[ ' + $join.call(xs, ', ') + ' ]';
+    }
+    if (isError(obj)) {
+        var parts = arrObjKeys(obj, inspect);
+        if (!('cause' in Error.prototype) && 'cause' in obj && !isEnumerable.call(obj, 'cause')) {
+            return '{ [' + String(obj) + '] ' + $join.call($concat.call('[cause]: ' + inspect(obj.cause), parts), ', ') + ' }';
+        }
+        if (parts.length === 0) { return '[' + String(obj) + ']'; }
+        return '{ [' + String(obj) + '] ' + $join.call(parts, ', ') + ' }';
+    }
+    if (typeof obj === 'object' && customInspect) {
+        if (inspectSymbol && typeof obj[inspectSymbol] === 'function' && utilInspect) {
+            return utilInspect(obj, { depth: maxDepth - depth });
+        } else if (customInspect !== 'symbol' && typeof obj.inspect === 'function') {
+            return obj.inspect();
+        }
+    }
+    if (isMap(obj)) {
+        var mapParts = [];
+        if (mapForEach) {
+            mapForEach.call(obj, function (value, key) {
+                mapParts.push(inspect(key, obj, true) + ' => ' + inspect(value, obj));
+            });
+        }
+        return collectionOf('Map', mapSize.call(obj), mapParts, indent);
+    }
+    if (isSet(obj)) {
+        var setParts = [];
+        if (setForEach) {
+            setForEach.call(obj, function (value) {
+                setParts.push(inspect(value, obj));
+            });
+        }
+        return collectionOf('Set', setSize.call(obj), setParts, indent);
+    }
+    if (isWeakMap(obj)) {
+        return weakCollectionOf('WeakMap');
+    }
+    if (isWeakSet(obj)) {
+        return weakCollectionOf('WeakSet');
+    }
+    if (isWeakRef(obj)) {
+        return weakCollectionOf('WeakRef');
+    }
+    if (isNumber(obj)) {
+        return markBoxed(inspect(Number(obj)));
+    }
+    if (isBigInt(obj)) {
+        return markBoxed(inspect(bigIntValueOf.call(obj)));
+    }
+    if (isBoolean(obj)) {
+        return markBoxed(booleanValueOf.call(obj));
+    }
+    if (isString(obj)) {
+        return markBoxed(inspect(String(obj)));
+    }
+    // note: in IE 8, sometimes `global !== window` but both are the prototypes of each other
+    /* eslint-env browser */
+    if (typeof window !== 'undefined' && obj === window) {
+        return '{ [object Window] }';
+    }
+    if (obj === __webpack_require__.g) {
+        return '{ [object globalThis] }';
+    }
+    if (!isDate(obj) && !isRegExp(obj)) {
+        var ys = arrObjKeys(obj, inspect);
+        var isPlainObject = gPO ? gPO(obj) === Object.prototype : obj instanceof Object || obj.constructor === Object;
+        var protoTag = obj instanceof Object ? '' : 'null prototype';
+        var stringTag = !isPlainObject && toStringTag && Object(obj) === obj && toStringTag in obj ? $slice.call(toStr(obj), 8, -1) : protoTag ? 'Object' : '';
+        var constructorTag = isPlainObject || typeof obj.constructor !== 'function' ? '' : obj.constructor.name ? obj.constructor.name + ' ' : '';
+        var tag = constructorTag + (stringTag || protoTag ? '[' + $join.call($concat.call([], stringTag || [], protoTag || []), ': ') + '] ' : '');
+        if (ys.length === 0) { return tag + '{}'; }
+        if (indent) {
+            return tag + '{' + indentedJoin(ys, indent) + '}';
+        }
+        return tag + '{ ' + $join.call(ys, ', ') + ' }';
+    }
+    return String(obj);
+};
+
+function wrapQuotes(s, defaultStyle, opts) {
+    var quoteChar = (opts.quoteStyle || defaultStyle) === 'double' ? '"' : "'";
+    return quoteChar + s + quoteChar;
+}
+
+function quote(s) {
+    return $replace.call(String(s), /"/g, '&quot;');
+}
+
+function isArray(obj) { return toStr(obj) === '[object Array]' && (!toStringTag || !(typeof obj === 'object' && toStringTag in obj)); }
+function isDate(obj) { return toStr(obj) === '[object Date]' && (!toStringTag || !(typeof obj === 'object' && toStringTag in obj)); }
+function isRegExp(obj) { return toStr(obj) === '[object RegExp]' && (!toStringTag || !(typeof obj === 'object' && toStringTag in obj)); }
+function isError(obj) { return toStr(obj) === '[object Error]' && (!toStringTag || !(typeof obj === 'object' && toStringTag in obj)); }
+function isString(obj) { return toStr(obj) === '[object String]' && (!toStringTag || !(typeof obj === 'object' && toStringTag in obj)); }
+function isNumber(obj) { return toStr(obj) === '[object Number]' && (!toStringTag || !(typeof obj === 'object' && toStringTag in obj)); }
+function isBoolean(obj) { return toStr(obj) === '[object Boolean]' && (!toStringTag || !(typeof obj === 'object' && toStringTag in obj)); }
+
+// Symbol and BigInt do have Symbol.toStringTag by spec, so that can't be used to eliminate false positives
+function isSymbol(obj) {
+    if (hasShammedSymbols) {
+        return obj && typeof obj === 'object' && obj instanceof Symbol;
+    }
+    if (typeof obj === 'symbol') {
+        return true;
+    }
+    if (!obj || typeof obj !== 'object' || !symToString) {
+        return false;
+    }
+    try {
+        symToString.call(obj);
+        return true;
+    } catch (e) {}
+    return false;
+}
+
+function isBigInt(obj) {
+    if (!obj || typeof obj !== 'object' || !bigIntValueOf) {
+        return false;
+    }
+    try {
+        bigIntValueOf.call(obj);
+        return true;
+    } catch (e) {}
+    return false;
+}
+
+var hasOwn = Object.prototype.hasOwnProperty || function (key) { return key in this; };
+function has(obj, key) {
+    return hasOwn.call(obj, key);
+}
+
+function toStr(obj) {
+    return objectToString.call(obj);
+}
+
+function nameOf(f) {
+    if (f.name) { return f.name; }
+    var m = $match.call(functionToString.call(f), /^function\s*([\w$]+)/);
+    if (m) { return m[1]; }
+    return null;
+}
+
+function indexOf(xs, x) {
+    if (xs.indexOf) { return xs.indexOf(x); }
+    for (var i = 0, l = xs.length; i < l; i++) {
+        if (xs[i] === x) { return i; }
+    }
+    return -1;
+}
+
+function isMap(x) {
+    if (!mapSize || !x || typeof x !== 'object') {
+        return false;
+    }
+    try {
+        mapSize.call(x);
+        try {
+            setSize.call(x);
+        } catch (s) {
+            return true;
+        }
+        return x instanceof Map; // core-js workaround, pre-v2.5.0
+    } catch (e) {}
+    return false;
+}
+
+function isWeakMap(x) {
+    if (!weakMapHas || !x || typeof x !== 'object') {
+        return false;
+    }
+    try {
+        weakMapHas.call(x, weakMapHas);
+        try {
+            weakSetHas.call(x, weakSetHas);
+        } catch (s) {
+            return true;
+        }
+        return x instanceof WeakMap; // core-js workaround, pre-v2.5.0
+    } catch (e) {}
+    return false;
+}
+
+function isWeakRef(x) {
+    if (!weakRefDeref || !x || typeof x !== 'object') {
+        return false;
+    }
+    try {
+        weakRefDeref.call(x);
+        return true;
+    } catch (e) {}
+    return false;
+}
+
+function isSet(x) {
+    if (!setSize || !x || typeof x !== 'object') {
+        return false;
+    }
+    try {
+        setSize.call(x);
+        try {
+            mapSize.call(x);
+        } catch (m) {
+            return true;
+        }
+        return x instanceof Set; // core-js workaround, pre-v2.5.0
+    } catch (e) {}
+    return false;
+}
+
+function isWeakSet(x) {
+    if (!weakSetHas || !x || typeof x !== 'object') {
+        return false;
+    }
+    try {
+        weakSetHas.call(x, weakSetHas);
+        try {
+            weakMapHas.call(x, weakMapHas);
+        } catch (s) {
+            return true;
+        }
+        return x instanceof WeakSet; // core-js workaround, pre-v2.5.0
+    } catch (e) {}
+    return false;
+}
+
+function isElement(x) {
+    if (!x || typeof x !== 'object') { return false; }
+    if (typeof HTMLElement !== 'undefined' && x instanceof HTMLElement) {
+        return true;
+    }
+    return typeof x.nodeName === 'string' && typeof x.getAttribute === 'function';
+}
+
+function inspectString(str, opts) {
+    if (str.length > opts.maxStringLength) {
+        var remaining = str.length - opts.maxStringLength;
+        var trailer = '... ' + remaining + ' more character' + (remaining > 1 ? 's' : '');
+        return inspectString($slice.call(str, 0, opts.maxStringLength), opts) + trailer;
+    }
+    // eslint-disable-next-line no-control-regex
+    var s = $replace.call($replace.call(str, /(['\\])/g, '\\$1'), /[\x00-\x1f]/g, lowbyte);
+    return wrapQuotes(s, 'single', opts);
+}
+
+function lowbyte(c) {
+    var n = c.charCodeAt(0);
+    var x = {
+        8: 'b',
+        9: 't',
+        10: 'n',
+        12: 'f',
+        13: 'r'
+    }[n];
+    if (x) { return '\\' + x; }
+    return '\\x' + (n < 0x10 ? '0' : '') + $toUpperCase.call(n.toString(16));
+}
+
+function markBoxed(str) {
+    return 'Object(' + str + ')';
+}
+
+function weakCollectionOf(type) {
+    return type + ' { ? }';
+}
+
+function collectionOf(type, size, entries, indent) {
+    var joinedEntries = indent ? indentedJoin(entries, indent) : $join.call(entries, ', ');
+    return type + ' (' + size + ') {' + joinedEntries + '}';
+}
+
+function singleLineValues(xs) {
+    for (var i = 0; i < xs.length; i++) {
+        if (indexOf(xs[i], '\n') >= 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function getIndent(opts, depth) {
+    var baseIndent;
+    if (opts.indent === '\t') {
+        baseIndent = '\t';
+    } else if (typeof opts.indent === 'number' && opts.indent > 0) {
+        baseIndent = $join.call(Array(opts.indent + 1), ' ');
+    } else {
+        return null;
+    }
+    return {
+        base: baseIndent,
+        prev: $join.call(Array(depth + 1), baseIndent)
+    };
+}
+
+function indentedJoin(xs, indent) {
+    if (xs.length === 0) { return ''; }
+    var lineJoiner = '\n' + indent.prev + indent.base;
+    return lineJoiner + $join.call(xs, ',' + lineJoiner) + '\n' + indent.prev;
+}
+
+function arrObjKeys(obj, inspect) {
+    var isArr = isArray(obj);
+    var xs = [];
+    if (isArr) {
+        xs.length = obj.length;
+        for (var i = 0; i < obj.length; i++) {
+            xs[i] = has(obj, i) ? inspect(obj[i], obj) : '';
+        }
+    }
+    var syms = typeof gOPS === 'function' ? gOPS(obj) : [];
+    var symMap;
+    if (hasShammedSymbols) {
+        symMap = {};
+        for (var k = 0; k < syms.length; k++) {
+            symMap['$' + syms[k]] = syms[k];
+        }
+    }
+
+    for (var key in obj) { // eslint-disable-line no-restricted-syntax
+        if (!has(obj, key)) { continue; } // eslint-disable-line no-restricted-syntax, no-continue
+        if (isArr && String(Number(key)) === key && key < obj.length) { continue; } // eslint-disable-line no-restricted-syntax, no-continue
+        if (hasShammedSymbols && symMap['$' + key] instanceof Symbol) {
+            // this is to prevent shammed Symbols, which are stored as strings, from being included in the string key section
+            continue; // eslint-disable-line no-restricted-syntax, no-continue
+        } else if ($test.call(/[^\w$]/, key)) {
+            xs.push(inspect(key, obj) + ': ' + inspect(obj[key], obj));
+        } else {
+            xs.push(key + ': ' + inspect(obj[key], obj));
+        }
+    }
+    if (typeof gOPS === 'function') {
+        for (var j = 0; j < syms.length; j++) {
+            if (isEnumerable.call(obj, syms[j])) {
+                xs.push('[' + inspect(syms[j]) + ']: ' + inspect(obj[syms[j]], obj));
+            }
+        }
+    }
+    return xs;
+}
+
+
+/***/ }),
+
+/***/ 4765:
+/***/ ((module) => {
+
+"use strict";
+
+
+var replace = String.prototype.replace;
+var percentTwenties = /%20/g;
+
+var Format = {
+    RFC1738: 'RFC1738',
+    RFC3986: 'RFC3986'
+};
+
+module.exports = {
+    'default': Format.RFC3986,
+    formatters: {
+        RFC1738: function (value) {
+            return replace.call(value, percentTwenties, '+');
+        },
+        RFC3986: function (value) {
+            return String(value);
+        }
+    },
+    RFC1738: Format.RFC1738,
+    RFC3986: Format.RFC3986
+};
+
+
+/***/ }),
+
+/***/ 5373:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var stringify = __webpack_require__(8636);
+var parse = __webpack_require__(2642);
+var formats = __webpack_require__(4765);
+
+module.exports = {
+    formats: formats,
+    parse: parse,
+    stringify: stringify
+};
+
+
+/***/ }),
+
+/***/ 2642:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var utils = __webpack_require__(7720);
+
+var has = Object.prototype.hasOwnProperty;
+var isArray = Array.isArray;
+
+var defaults = {
+    allowDots: false,
+    allowEmptyArrays: false,
+    allowPrototypes: false,
+    allowSparse: false,
+    arrayLimit: 20,
+    charset: 'utf-8',
+    charsetSentinel: false,
+    comma: false,
+    decodeDotInKeys: false,
+    decoder: utils.decode,
+    delimiter: '&',
+    depth: 5,
+    duplicates: 'combine',
+    ignoreQueryPrefix: false,
+    interpretNumericEntities: false,
+    parameterLimit: 1000,
+    parseArrays: true,
+    plainObjects: false,
+    strictNullHandling: false
+};
+
+var interpretNumericEntities = function (str) {
+    return str.replace(/&#(\d+);/g, function ($0, numberStr) {
+        return String.fromCharCode(parseInt(numberStr, 10));
+    });
+};
+
+var parseArrayValue = function (val, options) {
+    if (val && typeof val === 'string' && options.comma && val.indexOf(',') > -1) {
+        return val.split(',');
+    }
+
+    return val;
+};
+
+// This is what browsers will submit when the ✓ character occurs in an
+// application/x-www-form-urlencoded body and the encoding of the page containing
+// the form is iso-8859-1, or when the submitted form has an accept-charset
+// attribute of iso-8859-1. Presumably also with other charsets that do not contain
+// the ✓ character, such as us-ascii.
+var isoSentinel = 'utf8=%26%2310003%3B'; // encodeURIComponent('&#10003;')
+
+// These are the percent-encoded utf-8 octets representing a checkmark, indicating that the request actually is utf-8 encoded.
+var charsetSentinel = 'utf8=%E2%9C%93'; // encodeURIComponent('✓')
+
+var parseValues = function parseQueryStringValues(str, options) {
+    var obj = { __proto__: null };
+
+    var cleanStr = options.ignoreQueryPrefix ? str.replace(/^\?/, '') : str;
+    var limit = options.parameterLimit === Infinity ? undefined : options.parameterLimit;
+    var parts = cleanStr.split(options.delimiter, limit);
+    var skipIndex = -1; // Keep track of where the utf8 sentinel was found
+    var i;
+
+    var charset = options.charset;
+    if (options.charsetSentinel) {
+        for (i = 0; i < parts.length; ++i) {
+            if (parts[i].indexOf('utf8=') === 0) {
+                if (parts[i] === charsetSentinel) {
+                    charset = 'utf-8';
+                } else if (parts[i] === isoSentinel) {
+                    charset = 'iso-8859-1';
+                }
+                skipIndex = i;
+                i = parts.length; // The eslint settings do not allow break;
+            }
+        }
+    }
+
+    for (i = 0; i < parts.length; ++i) {
+        if (i === skipIndex) {
+            continue;
+        }
+        var part = parts[i];
+
+        var bracketEqualsPos = part.indexOf(']=');
+        var pos = bracketEqualsPos === -1 ? part.indexOf('=') : bracketEqualsPos + 1;
+
+        var key, val;
+        if (pos === -1) {
+            key = options.decoder(part, defaults.decoder, charset, 'key');
+            val = options.strictNullHandling ? null : '';
+        } else {
+            key = options.decoder(part.slice(0, pos), defaults.decoder, charset, 'key');
+            val = utils.maybeMap(
+                parseArrayValue(part.slice(pos + 1), options),
+                function (encodedVal) {
+                    return options.decoder(encodedVal, defaults.decoder, charset, 'value');
+                }
+            );
+        }
+
+        if (val && options.interpretNumericEntities && charset === 'iso-8859-1') {
+            val = interpretNumericEntities(val);
+        }
+
+        if (part.indexOf('[]=') > -1) {
+            val = isArray(val) ? [val] : val;
+        }
+
+        var existing = has.call(obj, key);
+        if (existing && options.duplicates === 'combine') {
+            obj[key] = utils.combine(obj[key], val);
+        } else if (!existing || options.duplicates === 'last') {
+            obj[key] = val;
+        }
+    }
+
+    return obj;
+};
+
+var parseObject = function (chain, val, options, valuesParsed) {
+    var leaf = valuesParsed ? val : parseArrayValue(val, options);
+
+    for (var i = chain.length - 1; i >= 0; --i) {
+        var obj;
+        var root = chain[i];
+
+        if (root === '[]' && options.parseArrays) {
+            obj = options.allowEmptyArrays && leaf === '' ? [] : [].concat(leaf);
+        } else {
+            obj = options.plainObjects ? Object.create(null) : {};
+            var cleanRoot = root.charAt(0) === '[' && root.charAt(root.length - 1) === ']' ? root.slice(1, -1) : root;
+            var decodedRoot = options.decodeDotInKeys ? cleanRoot.replace(/%2E/g, '.') : cleanRoot;
+            var index = parseInt(decodedRoot, 10);
+            if (!options.parseArrays && decodedRoot === '') {
+                obj = { 0: leaf };
+            } else if (
+                !isNaN(index)
+                && root !== decodedRoot
+                && String(index) === decodedRoot
+                && index >= 0
+                && (options.parseArrays && index <= options.arrayLimit)
+            ) {
+                obj = [];
+                obj[index] = leaf;
+            } else if (decodedRoot !== '__proto__') {
+                obj[decodedRoot] = leaf;
+            }
+        }
+
+        leaf = obj;
+    }
+
+    return leaf;
+};
+
+var parseKeys = function parseQueryStringKeys(givenKey, val, options, valuesParsed) {
+    if (!givenKey) {
+        return;
+    }
+
+    // Transform dot notation to bracket notation
+    var key = options.allowDots ? givenKey.replace(/\.([^.[]+)/g, '[$1]') : givenKey;
+
+    // The regex chunks
+
+    var brackets = /(\[[^[\]]*])/;
+    var child = /(\[[^[\]]*])/g;
+
+    // Get the parent
+
+    var segment = options.depth > 0 && brackets.exec(key);
+    var parent = segment ? key.slice(0, segment.index) : key;
+
+    // Stash the parent if it exists
+
+    var keys = [];
+    if (parent) {
+        // If we aren't using plain objects, optionally prefix keys that would overwrite object prototype properties
+        if (!options.plainObjects && has.call(Object.prototype, parent)) {
+            if (!options.allowPrototypes) {
+                return;
+            }
+        }
+
+        keys.push(parent);
+    }
+
+    // Loop through children appending to the array until we hit depth
+
+    var i = 0;
+    while (options.depth > 0 && (segment = child.exec(key)) !== null && i < options.depth) {
+        i += 1;
+        if (!options.plainObjects && has.call(Object.prototype, segment[1].slice(1, -1))) {
+            if (!options.allowPrototypes) {
+                return;
+            }
+        }
+        keys.push(segment[1]);
+    }
+
+    // If there's a remainder, just add whatever is left
+
+    if (segment) {
+        keys.push('[' + key.slice(segment.index) + ']');
+    }
+
+    return parseObject(keys, val, options, valuesParsed);
+};
+
+var normalizeParseOptions = function normalizeParseOptions(opts) {
+    if (!opts) {
+        return defaults;
+    }
+
+    if (typeof opts.allowEmptyArrays !== 'undefined' && typeof opts.allowEmptyArrays !== 'boolean') {
+        throw new TypeError('`allowEmptyArrays` option can only be `true` or `false`, when provided');
+    }
+
+    if (typeof opts.decodeDotInKeys !== 'undefined' && typeof opts.decodeDotInKeys !== 'boolean') {
+        throw new TypeError('`decodeDotInKeys` option can only be `true` or `false`, when provided');
+    }
+
+    if (opts.decoder !== null && typeof opts.decoder !== 'undefined' && typeof opts.decoder !== 'function') {
+        throw new TypeError('Decoder has to be a function.');
+    }
+
+    if (typeof opts.charset !== 'undefined' && opts.charset !== 'utf-8' && opts.charset !== 'iso-8859-1') {
+        throw new TypeError('The charset option must be either utf-8, iso-8859-1, or undefined');
+    }
+    var charset = typeof opts.charset === 'undefined' ? defaults.charset : opts.charset;
+
+    var duplicates = typeof opts.duplicates === 'undefined' ? defaults.duplicates : opts.duplicates;
+
+    if (duplicates !== 'combine' && duplicates !== 'first' && duplicates !== 'last') {
+        throw new TypeError('The duplicates option must be either combine, first, or last');
+    }
+
+    var allowDots = typeof opts.allowDots === 'undefined' ? opts.decodeDotInKeys === true ? true : defaults.allowDots : !!opts.allowDots;
+
+    return {
+        allowDots: allowDots,
+        allowEmptyArrays: typeof opts.allowEmptyArrays === 'boolean' ? !!opts.allowEmptyArrays : defaults.allowEmptyArrays,
+        allowPrototypes: typeof opts.allowPrototypes === 'boolean' ? opts.allowPrototypes : defaults.allowPrototypes,
+        allowSparse: typeof opts.allowSparse === 'boolean' ? opts.allowSparse : defaults.allowSparse,
+        arrayLimit: typeof opts.arrayLimit === 'number' ? opts.arrayLimit : defaults.arrayLimit,
+        charset: charset,
+        charsetSentinel: typeof opts.charsetSentinel === 'boolean' ? opts.charsetSentinel : defaults.charsetSentinel,
+        comma: typeof opts.comma === 'boolean' ? opts.comma : defaults.comma,
+        decodeDotInKeys: typeof opts.decodeDotInKeys === 'boolean' ? opts.decodeDotInKeys : defaults.decodeDotInKeys,
+        decoder: typeof opts.decoder === 'function' ? opts.decoder : defaults.decoder,
+        delimiter: typeof opts.delimiter === 'string' || utils.isRegExp(opts.delimiter) ? opts.delimiter : defaults.delimiter,
+        // eslint-disable-next-line no-implicit-coercion, no-extra-parens
+        depth: (typeof opts.depth === 'number' || opts.depth === false) ? +opts.depth : defaults.depth,
+        duplicates: duplicates,
+        ignoreQueryPrefix: opts.ignoreQueryPrefix === true,
+        interpretNumericEntities: typeof opts.interpretNumericEntities === 'boolean' ? opts.interpretNumericEntities : defaults.interpretNumericEntities,
+        parameterLimit: typeof opts.parameterLimit === 'number' ? opts.parameterLimit : defaults.parameterLimit,
+        parseArrays: opts.parseArrays !== false,
+        plainObjects: typeof opts.plainObjects === 'boolean' ? opts.plainObjects : defaults.plainObjects,
+        strictNullHandling: typeof opts.strictNullHandling === 'boolean' ? opts.strictNullHandling : defaults.strictNullHandling
+    };
+};
+
+module.exports = function (str, opts) {
+    var options = normalizeParseOptions(opts);
+
+    if (str === '' || str === null || typeof str === 'undefined') {
+        return options.plainObjects ? Object.create(null) : {};
+    }
+
+    var tempObj = typeof str === 'string' ? parseValues(str, options) : str;
+    var obj = options.plainObjects ? Object.create(null) : {};
+
+    // Iterate over the keys and setup the new object
+
+    var keys = Object.keys(tempObj);
+    for (var i = 0; i < keys.length; ++i) {
+        var key = keys[i];
+        var newObj = parseKeys(key, tempObj[key], options, typeof str === 'string');
+        obj = utils.merge(obj, newObj, options);
+    }
+
+    if (options.allowSparse === true) {
+        return obj;
+    }
+
+    return utils.compact(obj);
+};
+
+
+/***/ }),
+
+/***/ 8636:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var getSideChannel = __webpack_require__(920);
+var utils = __webpack_require__(7720);
+var formats = __webpack_require__(4765);
+var has = Object.prototype.hasOwnProperty;
+
+var arrayPrefixGenerators = {
+    brackets: function brackets(prefix) {
+        return prefix + '[]';
+    },
+    comma: 'comma',
+    indices: function indices(prefix, key) {
+        return prefix + '[' + key + ']';
+    },
+    repeat: function repeat(prefix) {
+        return prefix;
+    }
+};
+
+var isArray = Array.isArray;
+var push = Array.prototype.push;
+var pushToArray = function (arr, valueOrArray) {
+    push.apply(arr, isArray(valueOrArray) ? valueOrArray : [valueOrArray]);
+};
+
+var toISO = Date.prototype.toISOString;
+
+var defaultFormat = formats['default'];
+var defaults = {
+    addQueryPrefix: false,
+    allowDots: false,
+    allowEmptyArrays: false,
+    arrayFormat: 'indices',
+    charset: 'utf-8',
+    charsetSentinel: false,
+    delimiter: '&',
+    encode: true,
+    encodeDotInKeys: false,
+    encoder: utils.encode,
+    encodeValuesOnly: false,
+    format: defaultFormat,
+    formatter: formats.formatters[defaultFormat],
+    // deprecated
+    indices: false,
+    serializeDate: function serializeDate(date) {
+        return toISO.call(date);
+    },
+    skipNulls: false,
+    strictNullHandling: false
+};
+
+var isNonNullishPrimitive = function isNonNullishPrimitive(v) {
+    return typeof v === 'string'
+        || typeof v === 'number'
+        || typeof v === 'boolean'
+        || typeof v === 'symbol'
+        || typeof v === 'bigint';
+};
+
+var sentinel = {};
+
+var stringify = function stringify(
+    object,
+    prefix,
+    generateArrayPrefix,
+    commaRoundTrip,
+    allowEmptyArrays,
+    strictNullHandling,
+    skipNulls,
+    encodeDotInKeys,
+    encoder,
+    filter,
+    sort,
+    allowDots,
+    serializeDate,
+    format,
+    formatter,
+    encodeValuesOnly,
+    charset,
+    sideChannel
+) {
+    var obj = object;
+
+    var tmpSc = sideChannel;
+    var step = 0;
+    var findFlag = false;
+    while ((tmpSc = tmpSc.get(sentinel)) !== void undefined && !findFlag) {
+        // Where object last appeared in the ref tree
+        var pos = tmpSc.get(object);
+        step += 1;
+        if (typeof pos !== 'undefined') {
+            if (pos === step) {
+                throw new RangeError('Cyclic object value');
+            } else {
+                findFlag = true; // Break while
+            }
+        }
+        if (typeof tmpSc.get(sentinel) === 'undefined') {
+            step = 0;
+        }
+    }
+
+    if (typeof filter === 'function') {
+        obj = filter(prefix, obj);
+    } else if (obj instanceof Date) {
+        obj = serializeDate(obj);
+    } else if (generateArrayPrefix === 'comma' && isArray(obj)) {
+        obj = utils.maybeMap(obj, function (value) {
+            if (value instanceof Date) {
+                return serializeDate(value);
+            }
+            return value;
+        });
+    }
+
+    if (obj === null) {
+        if (strictNullHandling) {
+            return encoder && !encodeValuesOnly ? encoder(prefix, defaults.encoder, charset, 'key', format) : prefix;
+        }
+
+        obj = '';
+    }
+
+    if (isNonNullishPrimitive(obj) || utils.isBuffer(obj)) {
+        if (encoder) {
+            var keyValue = encodeValuesOnly ? prefix : encoder(prefix, defaults.encoder, charset, 'key', format);
+            return [formatter(keyValue) + '=' + formatter(encoder(obj, defaults.encoder, charset, 'value', format))];
+        }
+        return [formatter(prefix) + '=' + formatter(String(obj))];
+    }
+
+    var values = [];
+
+    if (typeof obj === 'undefined') {
+        return values;
+    }
+
+    var objKeys;
+    if (generateArrayPrefix === 'comma' && isArray(obj)) {
+        // we need to join elements in
+        if (encodeValuesOnly && encoder) {
+            obj = utils.maybeMap(obj, encoder);
+        }
+        objKeys = [{ value: obj.length > 0 ? obj.join(',') || null : void undefined }];
+    } else if (isArray(filter)) {
+        objKeys = filter;
+    } else {
+        var keys = Object.keys(obj);
+        objKeys = sort ? keys.sort(sort) : keys;
+    }
+
+    var encodedPrefix = encodeDotInKeys ? prefix.replace(/\./g, '%2E') : prefix;
+
+    var adjustedPrefix = commaRoundTrip && isArray(obj) && obj.length === 1 ? encodedPrefix + '[]' : encodedPrefix;
+
+    if (allowEmptyArrays && isArray(obj) && obj.length === 0) {
+        return adjustedPrefix + '[]';
+    }
+
+    for (var j = 0; j < objKeys.length; ++j) {
+        var key = objKeys[j];
+        var value = typeof key === 'object' && typeof key.value !== 'undefined' ? key.value : obj[key];
+
+        if (skipNulls && value === null) {
+            continue;
+        }
+
+        var encodedKey = allowDots && encodeDotInKeys ? key.replace(/\./g, '%2E') : key;
+        var keyPrefix = isArray(obj)
+            ? typeof generateArrayPrefix === 'function' ? generateArrayPrefix(adjustedPrefix, encodedKey) : adjustedPrefix
+            : adjustedPrefix + (allowDots ? '.' + encodedKey : '[' + encodedKey + ']');
+
+        sideChannel.set(object, step);
+        var valueSideChannel = getSideChannel();
+        valueSideChannel.set(sentinel, sideChannel);
+        pushToArray(values, stringify(
+            value,
+            keyPrefix,
+            generateArrayPrefix,
+            commaRoundTrip,
+            allowEmptyArrays,
+            strictNullHandling,
+            skipNulls,
+            encodeDotInKeys,
+            generateArrayPrefix === 'comma' && encodeValuesOnly && isArray(obj) ? null : encoder,
+            filter,
+            sort,
+            allowDots,
+            serializeDate,
+            format,
+            formatter,
+            encodeValuesOnly,
+            charset,
+            valueSideChannel
+        ));
+    }
+
+    return values;
+};
+
+var normalizeStringifyOptions = function normalizeStringifyOptions(opts) {
+    if (!opts) {
+        return defaults;
+    }
+
+    if (typeof opts.allowEmptyArrays !== 'undefined' && typeof opts.allowEmptyArrays !== 'boolean') {
+        throw new TypeError('`allowEmptyArrays` option can only be `true` or `false`, when provided');
+    }
+
+    if (typeof opts.encodeDotInKeys !== 'undefined' && typeof opts.encodeDotInKeys !== 'boolean') {
+        throw new TypeError('`encodeDotInKeys` option can only be `true` or `false`, when provided');
+    }
+
+    if (opts.encoder !== null && typeof opts.encoder !== 'undefined' && typeof opts.encoder !== 'function') {
+        throw new TypeError('Encoder has to be a function.');
+    }
+
+    var charset = opts.charset || defaults.charset;
+    if (typeof opts.charset !== 'undefined' && opts.charset !== 'utf-8' && opts.charset !== 'iso-8859-1') {
+        throw new TypeError('The charset option must be either utf-8, iso-8859-1, or undefined');
+    }
+
+    var format = formats['default'];
+    if (typeof opts.format !== 'undefined') {
+        if (!has.call(formats.formatters, opts.format)) {
+            throw new TypeError('Unknown format option provided.');
+        }
+        format = opts.format;
+    }
+    var formatter = formats.formatters[format];
+
+    var filter = defaults.filter;
+    if (typeof opts.filter === 'function' || isArray(opts.filter)) {
+        filter = opts.filter;
+    }
+
+    var arrayFormat;
+    if (opts.arrayFormat in arrayPrefixGenerators) {
+        arrayFormat = opts.arrayFormat;
+    } else if ('indices' in opts) {
+        arrayFormat = opts.indices ? 'indices' : 'repeat';
+    } else {
+        arrayFormat = defaults.arrayFormat;
+    }
+
+    if ('commaRoundTrip' in opts && typeof opts.commaRoundTrip !== 'boolean') {
+        throw new TypeError('`commaRoundTrip` must be a boolean, or absent');
+    }
+
+    var allowDots = typeof opts.allowDots === 'undefined' ? opts.encodeDotInKeys === true ? true : defaults.allowDots : !!opts.allowDots;
+
+    return {
+        addQueryPrefix: typeof opts.addQueryPrefix === 'boolean' ? opts.addQueryPrefix : defaults.addQueryPrefix,
+        allowDots: allowDots,
+        allowEmptyArrays: typeof opts.allowEmptyArrays === 'boolean' ? !!opts.allowEmptyArrays : defaults.allowEmptyArrays,
+        arrayFormat: arrayFormat,
+        charset: charset,
+        charsetSentinel: typeof opts.charsetSentinel === 'boolean' ? opts.charsetSentinel : defaults.charsetSentinel,
+        commaRoundTrip: opts.commaRoundTrip,
+        delimiter: typeof opts.delimiter === 'undefined' ? defaults.delimiter : opts.delimiter,
+        encode: typeof opts.encode === 'boolean' ? opts.encode : defaults.encode,
+        encodeDotInKeys: typeof opts.encodeDotInKeys === 'boolean' ? opts.encodeDotInKeys : defaults.encodeDotInKeys,
+        encoder: typeof opts.encoder === 'function' ? opts.encoder : defaults.encoder,
+        encodeValuesOnly: typeof opts.encodeValuesOnly === 'boolean' ? opts.encodeValuesOnly : defaults.encodeValuesOnly,
+        filter: filter,
+        format: format,
+        formatter: formatter,
+        serializeDate: typeof opts.serializeDate === 'function' ? opts.serializeDate : defaults.serializeDate,
+        skipNulls: typeof opts.skipNulls === 'boolean' ? opts.skipNulls : defaults.skipNulls,
+        sort: typeof opts.sort === 'function' ? opts.sort : null,
+        strictNullHandling: typeof opts.strictNullHandling === 'boolean' ? opts.strictNullHandling : defaults.strictNullHandling
+    };
+};
+
+module.exports = function (object, opts) {
+    var obj = object;
+    var options = normalizeStringifyOptions(opts);
+
+    var objKeys;
+    var filter;
+
+    if (typeof options.filter === 'function') {
+        filter = options.filter;
+        obj = filter('', obj);
+    } else if (isArray(options.filter)) {
+        filter = options.filter;
+        objKeys = filter;
+    }
+
+    var keys = [];
+
+    if (typeof obj !== 'object' || obj === null) {
+        return '';
+    }
+
+    var generateArrayPrefix = arrayPrefixGenerators[options.arrayFormat];
+    var commaRoundTrip = generateArrayPrefix === 'comma' && options.commaRoundTrip;
+
+    if (!objKeys) {
+        objKeys = Object.keys(obj);
+    }
+
+    if (options.sort) {
+        objKeys.sort(options.sort);
+    }
+
+    var sideChannel = getSideChannel();
+    for (var i = 0; i < objKeys.length; ++i) {
+        var key = objKeys[i];
+
+        if (options.skipNulls && obj[key] === null) {
+            continue;
+        }
+        pushToArray(keys, stringify(
+            obj[key],
+            key,
+            generateArrayPrefix,
+            commaRoundTrip,
+            options.allowEmptyArrays,
+            options.strictNullHandling,
+            options.skipNulls,
+            options.encodeDotInKeys,
+            options.encode ? options.encoder : null,
+            options.filter,
+            options.sort,
+            options.allowDots,
+            options.serializeDate,
+            options.format,
+            options.formatter,
+            options.encodeValuesOnly,
+            options.charset,
+            sideChannel
+        ));
+    }
+
+    var joined = keys.join(options.delimiter);
+    var prefix = options.addQueryPrefix === true ? '?' : '';
+
+    if (options.charsetSentinel) {
+        if (options.charset === 'iso-8859-1') {
+            // encodeURIComponent('&#10003;'), the "numeric entity" representation of a checkmark
+            prefix += 'utf8=%26%2310003%3B&';
+        } else {
+            // encodeURIComponent('✓')
+            prefix += 'utf8=%E2%9C%93&';
+        }
+    }
+
+    return joined.length > 0 ? prefix + joined : '';
+};
+
+
+/***/ }),
+
+/***/ 7720:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var formats = __webpack_require__(4765);
+
+var has = Object.prototype.hasOwnProperty;
+var isArray = Array.isArray;
+
+var hexTable = (function () {
+    var array = [];
+    for (var i = 0; i < 256; ++i) {
+        array.push('%' + ((i < 16 ? '0' : '') + i.toString(16)).toUpperCase());
+    }
+
+    return array;
+}());
+
+var compactQueue = function compactQueue(queue) {
+    while (queue.length > 1) {
+        var item = queue.pop();
+        var obj = item.obj[item.prop];
+
+        if (isArray(obj)) {
+            var compacted = [];
+
+            for (var j = 0; j < obj.length; ++j) {
+                if (typeof obj[j] !== 'undefined') {
+                    compacted.push(obj[j]);
+                }
+            }
+
+            item.obj[item.prop] = compacted;
+        }
+    }
+};
+
+var arrayToObject = function arrayToObject(source, options) {
+    var obj = options && options.plainObjects ? Object.create(null) : {};
+    for (var i = 0; i < source.length; ++i) {
+        if (typeof source[i] !== 'undefined') {
+            obj[i] = source[i];
+        }
+    }
+
+    return obj;
+};
+
+var merge = function merge(target, source, options) {
+    /* eslint no-param-reassign: 0 */
+    if (!source) {
+        return target;
+    }
+
+    if (typeof source !== 'object') {
+        if (isArray(target)) {
+            target.push(source);
+        } else if (target && typeof target === 'object') {
+            if ((options && (options.plainObjects || options.allowPrototypes)) || !has.call(Object.prototype, source)) {
+                target[source] = true;
+            }
+        } else {
+            return [target, source];
+        }
+
+        return target;
+    }
+
+    if (!target || typeof target !== 'object') {
+        return [target].concat(source);
+    }
+
+    var mergeTarget = target;
+    if (isArray(target) && !isArray(source)) {
+        mergeTarget = arrayToObject(target, options);
+    }
+
+    if (isArray(target) && isArray(source)) {
+        source.forEach(function (item, i) {
+            if (has.call(target, i)) {
+                var targetItem = target[i];
+                if (targetItem && typeof targetItem === 'object' && item && typeof item === 'object') {
+                    target[i] = merge(targetItem, item, options);
+                } else {
+                    target.push(item);
+                }
+            } else {
+                target[i] = item;
+            }
+        });
+        return target;
+    }
+
+    return Object.keys(source).reduce(function (acc, key) {
+        var value = source[key];
+
+        if (has.call(acc, key)) {
+            acc[key] = merge(acc[key], value, options);
+        } else {
+            acc[key] = value;
+        }
+        return acc;
+    }, mergeTarget);
+};
+
+var assign = function assignSingleSource(target, source) {
+    return Object.keys(source).reduce(function (acc, key) {
+        acc[key] = source[key];
+        return acc;
+    }, target);
+};
+
+var decode = function (str, decoder, charset) {
+    var strWithoutPlus = str.replace(/\+/g, ' ');
+    if (charset === 'iso-8859-1') {
+        // unescape never throws, no try...catch needed:
+        return strWithoutPlus.replace(/%[0-9a-f]{2}/gi, unescape);
+    }
+    // utf-8
+    try {
+        return decodeURIComponent(strWithoutPlus);
+    } catch (e) {
+        return strWithoutPlus;
+    }
+};
+
+var limit = 1024;
+
+/* eslint operator-linebreak: [2, "before"] */
+
+var encode = function encode(str, defaultEncoder, charset, kind, format) {
+    // This code was originally written by Brian White (mscdex) for the io.js core querystring library.
+    // It has been adapted here for stricter adherence to RFC 3986
+    if (str.length === 0) {
+        return str;
+    }
+
+    var string = str;
+    if (typeof str === 'symbol') {
+        string = Symbol.prototype.toString.call(str);
+    } else if (typeof str !== 'string') {
+        string = String(str);
+    }
+
+    if (charset === 'iso-8859-1') {
+        return escape(string).replace(/%u[0-9a-f]{4}/gi, function ($0) {
+            return '%26%23' + parseInt($0.slice(2), 16) + '%3B';
+        });
+    }
+
+    var out = '';
+    for (var j = 0; j < string.length; j += limit) {
+        var segment = string.length >= limit ? string.slice(j, j + limit) : string;
+        var arr = [];
+
+        for (var i = 0; i < segment.length; ++i) {
+            var c = segment.charCodeAt(i);
+            if (
+                c === 0x2D // -
+                || c === 0x2E // .
+                || c === 0x5F // _
+                || c === 0x7E // ~
+                || (c >= 0x30 && c <= 0x39) // 0-9
+                || (c >= 0x41 && c <= 0x5A) // a-z
+                || (c >= 0x61 && c <= 0x7A) // A-Z
+                || (format === formats.RFC1738 && (c === 0x28 || c === 0x29)) // ( )
+            ) {
+                arr[arr.length] = segment.charAt(i);
+                continue;
+            }
+
+            if (c < 0x80) {
+                arr[arr.length] = hexTable[c];
+                continue;
+            }
+
+            if (c < 0x800) {
+                arr[arr.length] = hexTable[0xC0 | (c >> 6)]
+                    + hexTable[0x80 | (c & 0x3F)];
+                continue;
+            }
+
+            if (c < 0xD800 || c >= 0xE000) {
+                arr[arr.length] = hexTable[0xE0 | (c >> 12)]
+                    + hexTable[0x80 | ((c >> 6) & 0x3F)]
+                    + hexTable[0x80 | (c & 0x3F)];
+                continue;
+            }
+
+            i += 1;
+            c = 0x10000 + (((c & 0x3FF) << 10) | (segment.charCodeAt(i) & 0x3FF));
+
+            arr[arr.length] = hexTable[0xF0 | (c >> 18)]
+                + hexTable[0x80 | ((c >> 12) & 0x3F)]
+                + hexTable[0x80 | ((c >> 6) & 0x3F)]
+                + hexTable[0x80 | (c & 0x3F)];
+        }
+
+        out += arr.join('');
+    }
+
+    return out;
+};
+
+var compact = function compact(value) {
+    var queue = [{ obj: { o: value }, prop: 'o' }];
+    var refs = [];
+
+    for (var i = 0; i < queue.length; ++i) {
+        var item = queue[i];
+        var obj = item.obj[item.prop];
+
+        var keys = Object.keys(obj);
+        for (var j = 0; j < keys.length; ++j) {
+            var key = keys[j];
+            var val = obj[key];
+            if (typeof val === 'object' && val !== null && refs.indexOf(val) === -1) {
+                queue.push({ obj: obj, prop: key });
+                refs.push(val);
+            }
+        }
+    }
+
+    compactQueue(queue);
+
+    return value;
+};
+
+var isRegExp = function isRegExp(obj) {
+    return Object.prototype.toString.call(obj) === '[object RegExp]';
+};
+
+var isBuffer = function isBuffer(obj) {
+    if (!obj || typeof obj !== 'object') {
+        return false;
+    }
+
+    return !!(obj.constructor && obj.constructor.isBuffer && obj.constructor.isBuffer(obj));
+};
+
+var combine = function combine(a, b) {
+    return [].concat(a, b);
+};
+
+var maybeMap = function maybeMap(val, fn) {
+    if (isArray(val)) {
+        var mapped = [];
+        for (var i = 0; i < val.length; i += 1) {
+            mapped.push(fn(val[i]));
+        }
+        return mapped;
+    }
+    return fn(val);
+};
+
+module.exports = {
+    arrayToObject: arrayToObject,
+    assign: assign,
+    combine: combine,
+    compact: compact,
+    decode: decode,
+    encode: encode,
+    isBuffer: isBuffer,
+    isRegExp: isRegExp,
+    maybeMap: maybeMap,
+    merge: merge
+};
+
+
+/***/ }),
+
+/***/ 6897:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(453);
+var define = __webpack_require__(41);
+var hasDescriptors = __webpack_require__(592)();
+var gOPD = __webpack_require__(5795);
+
+var $TypeError = __webpack_require__(9675);
+var $floor = GetIntrinsic('%Math.floor%');
+
+/** @type {import('.')} */
+module.exports = function setFunctionLength(fn, length) {
+	if (typeof fn !== 'function') {
+		throw new $TypeError('`fn` is not a function');
+	}
+	if (typeof length !== 'number' || length < 0 || length > 0xFFFFFFFF || $floor(length) !== length) {
+		throw new $TypeError('`length` must be a positive 32-bit integer');
+	}
+
+	var loose = arguments.length > 2 && !!arguments[2];
+
+	var functionLengthIsConfigurable = true;
+	var functionLengthIsWritable = true;
+	if ('length' in fn && gOPD) {
+		var desc = gOPD(fn, 'length');
+		if (desc && !desc.configurable) {
+			functionLengthIsConfigurable = false;
+		}
+		if (desc && !desc.writable) {
+			functionLengthIsWritable = false;
+		}
+	}
+
+	if (functionLengthIsConfigurable || functionLengthIsWritable || !loose) {
+		if (hasDescriptors) {
+			define(/** @type {Parameters<define>[0]} */ (fn), 'length', length, true, true);
+		} else {
+			define(/** @type {Parameters<define>[0]} */ (fn), 'length', length);
+		}
+	}
+	return fn;
+};
+
+
+/***/ }),
+
+/***/ 920:
+/***/ ((module, __unused_webpack_exports, __webpack_require__) => {
+
+"use strict";
+
+
+var GetIntrinsic = __webpack_require__(453);
+var callBound = __webpack_require__(8075);
+var inspect = __webpack_require__(8859);
+
+var $TypeError = __webpack_require__(9675);
+var $WeakMap = GetIntrinsic('%WeakMap%', true);
+var $Map = GetIntrinsic('%Map%', true);
+
+var $weakMapGet = callBound('WeakMap.prototype.get', true);
+var $weakMapSet = callBound('WeakMap.prototype.set', true);
+var $weakMapHas = callBound('WeakMap.prototype.has', true);
+var $mapGet = callBound('Map.prototype.get', true);
+var $mapSet = callBound('Map.prototype.set', true);
+var $mapHas = callBound('Map.prototype.has', true);
+
+/*
+* This function traverses the list returning the node corresponding to the given key.
+*
+* That node is also moved to the head of the list, so that if it's accessed again we don't need to traverse the whole list. By doing so, all the recently used nodes can be accessed relatively quickly.
+*/
+/** @type {import('.').listGetNode} */
+var listGetNode = function (list, key) { // eslint-disable-line consistent-return
+	/** @type {typeof list | NonNullable<(typeof list)['next']>} */
+	var prev = list;
+	/** @type {(typeof list)['next']} */
+	var curr;
+	for (; (curr = prev.next) !== null; prev = curr) {
+		if (curr.key === key) {
+			prev.next = curr.next;
+			// eslint-disable-next-line no-extra-parens
+			curr.next = /** @type {NonNullable<typeof list.next>} */ (list.next);
+			list.next = curr; // eslint-disable-line no-param-reassign
+			return curr;
+		}
+	}
+};
+
+/** @type {import('.').listGet} */
+var listGet = function (objects, key) {
+	var node = listGetNode(objects, key);
+	return node && node.value;
+};
+/** @type {import('.').listSet} */
+var listSet = function (objects, key, value) {
+	var node = listGetNode(objects, key);
+	if (node) {
+		node.value = value;
+	} else {
+		// Prepend the new node to the beginning of the list
+		objects.next = /** @type {import('.').ListNode<typeof value>} */ ({ // eslint-disable-line no-param-reassign, no-extra-parens
+			key: key,
+			next: objects.next,
+			value: value
+		});
+	}
+};
+/** @type {import('.').listHas} */
+var listHas = function (objects, key) {
+	return !!listGetNode(objects, key);
+};
+
+/** @type {import('.')} */
+module.exports = function getSideChannel() {
+	/** @type {WeakMap<object, unknown>} */ var $wm;
+	/** @type {Map<object, unknown>} */ var $m;
+	/** @type {import('.').RootNode<unknown>} */ var $o;
+
+	/** @type {import('.').Channel} */
+	var channel = {
+		assert: function (key) {
+			if (!channel.has(key)) {
+				throw new $TypeError('Side channel does not contain ' + inspect(key));
+			}
+		},
+		get: function (key) { // eslint-disable-line consistent-return
+			if ($WeakMap && key && (typeof key === 'object' || typeof key === 'function')) {
+				if ($wm) {
+					return $weakMapGet($wm, key);
+				}
+			} else if ($Map) {
+				if ($m) {
+					return $mapGet($m, key);
+				}
+			} else {
+				if ($o) { // eslint-disable-line no-lonely-if
+					return listGet($o, key);
+				}
+			}
+		},
+		has: function (key) {
+			if ($WeakMap && key && (typeof key === 'object' || typeof key === 'function')) {
+				if ($wm) {
+					return $weakMapHas($wm, key);
+				}
+			} else if ($Map) {
+				if ($m) {
+					return $mapHas($m, key);
+				}
+			} else {
+				if ($o) { // eslint-disable-line no-lonely-if
+					return listHas($o, key);
+				}
+			}
+			return false;
+		},
+		set: function (key, value) {
+			if ($WeakMap && key && (typeof key === 'object' || typeof key === 'function')) {
+				if (!$wm) {
+					$wm = new $WeakMap();
+				}
+				$weakMapSet($wm, key, value);
+			} else if ($Map) {
+				if (!$m) {
+					$m = new $Map();
+				}
+				$mapSet($m, key, value);
+			} else {
+				if (!$o) {
+					// Initialize the linked list as an empty node, so that we don't have to special-case handling of the first node: we can always refer to it as (previous node).next, instead of something like (list).head
+					$o = { key: {}, next: null };
+				}
+				listSet($o, key, value);
+			}
+		}
+	};
+	return channel;
+};
+
+
+/***/ }),
+
+/***/ 1270:
+/***/ (function(module, exports, __webpack_require__) {
+
+/* module decorator */ module = __webpack_require__.nmd(module);
+var __WEBPACK_AMD_DEFINE_RESULT__;/*! https://mths.be/punycode v1.4.1 by @mathias */
+;(function(root) {
+
+	/** Detect free variables */
+	var freeExports =  true && exports &&
+		!exports.nodeType && exports;
+	var freeModule =  true && module &&
+		!module.nodeType && module;
+	var freeGlobal = typeof __webpack_require__.g == 'object' && __webpack_require__.g;
+	if (
+		freeGlobal.global === freeGlobal ||
+		freeGlobal.window === freeGlobal ||
+		freeGlobal.self === freeGlobal
+	) {
+		root = freeGlobal;
+	}
+
+	/**
+	 * The `punycode` object.
+	 * @name punycode
+	 * @type Object
+	 */
+	var punycode,
+
+	/** Highest positive signed 32-bit float value */
+	maxInt = 2147483647, // aka. 0x7FFFFFFF or 2^31-1
+
+	/** Bootstring parameters */
+	base = 36,
+	tMin = 1,
+	tMax = 26,
+	skew = 38,
+	damp = 700,
+	initialBias = 72,
+	initialN = 128, // 0x80
+	delimiter = '-', // '\x2D'
+
+	/** Regular expressions */
+	regexPunycode = /^xn--/,
+	regexNonASCII = /[^\x20-\x7E]/, // unprintable ASCII chars + non-ASCII chars
+	regexSeparators = /[\x2E\u3002\uFF0E\uFF61]/g, // RFC 3490 separators
+
+	/** Error messages */
+	errors = {
+		'overflow': 'Overflow: input needs wider integers to process',
+		'not-basic': 'Illegal input >= 0x80 (not a basic code point)',
+		'invalid-input': 'Invalid input'
+	},
+
+	/** Convenience shortcuts */
+	baseMinusTMin = base - tMin,
+	floor = Math.floor,
+	stringFromCharCode = String.fromCharCode,
+
+	/** Temporary variable */
+	key;
+
+	/*--------------------------------------------------------------------------*/
+
+	/**
+	 * A generic error utility function.
+	 * @private
+	 * @param {String} type The error type.
+	 * @returns {Error} Throws a `RangeError` with the applicable error message.
+	 */
+	function error(type) {
+		throw new RangeError(errors[type]);
+	}
+
+	/**
+	 * A generic `Array#map` utility function.
+	 * @private
+	 * @param {Array} array The array to iterate over.
+	 * @param {Function} callback The function that gets called for every array
+	 * item.
+	 * @returns {Array} A new array of values returned by the callback function.
+	 */
+	function map(array, fn) {
+		var length = array.length;
+		var result = [];
+		while (length--) {
+			result[length] = fn(array[length]);
+		}
+		return result;
+	}
+
+	/**
+	 * A simple `Array#map`-like wrapper to work with domain name strings or email
+	 * addresses.
+	 * @private
+	 * @param {String} domain The domain name or email address.
+	 * @param {Function} callback The function that gets called for every
+	 * character.
+	 * @returns {Array} A new string of characters returned by the callback
+	 * function.
+	 */
+	function mapDomain(string, fn) {
+		var parts = string.split('@');
+		var result = '';
+		if (parts.length > 1) {
+			// In email addresses, only the domain name should be punycoded. Leave
+			// the local part (i.e. everything up to `@`) intact.
+			result = parts[0] + '@';
+			string = parts[1];
+		}
+		// Avoid `split(regex)` for IE8 compatibility. See #17.
+		string = string.replace(regexSeparators, '\x2E');
+		var labels = string.split('.');
+		var encoded = map(labels, fn).join('.');
+		return result + encoded;
+	}
+
+	/**
+	 * Creates an array containing the numeric code points of each Unicode
+	 * character in the string. While JavaScript uses UCS-2 internally,
+	 * this function will convert a pair of surrogate halves (each of which
+	 * UCS-2 exposes as separate characters) into a single code point,
+	 * matching UTF-16.
+	 * @see `punycode.ucs2.encode`
+	 * @see <https://mathiasbynens.be/notes/javascript-encoding>
+	 * @memberOf punycode.ucs2
+	 * @name decode
+	 * @param {String} string The Unicode input string (UCS-2).
+	 * @returns {Array} The new array of code points.
+	 */
+	function ucs2decode(string) {
+		var output = [],
+		    counter = 0,
+		    length = string.length,
+		    value,
+		    extra;
+		while (counter < length) {
+			value = string.charCodeAt(counter++);
+			if (value >= 0xD800 && value <= 0xDBFF && counter < length) {
+				// high surrogate, and there is a next character
+				extra = string.charCodeAt(counter++);
+				if ((extra & 0xFC00) == 0xDC00) { // low surrogate
+					output.push(((value & 0x3FF) << 10) + (extra & 0x3FF) + 0x10000);
+				} else {
+					// unmatched surrogate; only append this code unit, in case the next
+					// code unit is the high surrogate of a surrogate pair
+					output.push(value);
+					counter--;
+				}
+			} else {
+				output.push(value);
+			}
+		}
+		return output;
+	}
+
+	/**
+	 * Creates a string based on an array of numeric code points.
+	 * @see `punycode.ucs2.decode`
+	 * @memberOf punycode.ucs2
+	 * @name encode
+	 * @param {Array} codePoints The array of numeric code points.
+	 * @returns {String} The new Unicode string (UCS-2).
+	 */
+	function ucs2encode(array) {
+		return map(array, function(value) {
+			var output = '';
+			if (value > 0xFFFF) {
+				value -= 0x10000;
+				output += stringFromCharCode(value >>> 10 & 0x3FF | 0xD800);
+				value = 0xDC00 | value & 0x3FF;
+			}
+			output += stringFromCharCode(value);
+			return output;
+		}).join('');
+	}
+
+	/**
+	 * Converts a basic code point into a digit/integer.
+	 * @see `digitToBasic()`
+	 * @private
+	 * @param {Number} codePoint The basic numeric code point value.
+	 * @returns {Number} The numeric value of a basic code point (for use in
+	 * representing integers) in the range `0` to `base - 1`, or `base` if
+	 * the code point does not represent a value.
+	 */
+	function basicToDigit(codePoint) {
+		if (codePoint - 48 < 10) {
+			return codePoint - 22;
+		}
+		if (codePoint - 65 < 26) {
+			return codePoint - 65;
+		}
+		if (codePoint - 97 < 26) {
+			return codePoint - 97;
+		}
+		return base;
+	}
+
+	/**
+	 * Converts a digit/integer into a basic code point.
+	 * @see `basicToDigit()`
+	 * @private
+	 * @param {Number} digit The numeric value of a basic code point.
+	 * @returns {Number} The basic code point whose value (when used for
+	 * representing integers) is `digit`, which needs to be in the range
+	 * `0` to `base - 1`. If `flag` is non-zero, the uppercase form is
+	 * used; else, the lowercase form is used. The behavior is undefined
+	 * if `flag` is non-zero and `digit` has no uppercase form.
+	 */
+	function digitToBasic(digit, flag) {
+		//  0..25 map to ASCII a..z or A..Z
+		// 26..35 map to ASCII 0..9
+		return digit + 22 + 75 * (digit < 26) - ((flag != 0) << 5);
+	}
+
+	/**
+	 * Bias adaptation function as per section 3.4 of RFC 3492.
+	 * https://tools.ietf.org/html/rfc3492#section-3.4
+	 * @private
+	 */
+	function adapt(delta, numPoints, firstTime) {
+		var k = 0;
+		delta = firstTime ? floor(delta / damp) : delta >> 1;
+		delta += floor(delta / numPoints);
+		for (/* no initialization */; delta > baseMinusTMin * tMax >> 1; k += base) {
+			delta = floor(delta / baseMinusTMin);
+		}
+		return floor(k + (baseMinusTMin + 1) * delta / (delta + skew));
+	}
+
+	/**
+	 * Converts a Punycode string of ASCII-only symbols to a string of Unicode
+	 * symbols.
+	 * @memberOf punycode
+	 * @param {String} input The Punycode string of ASCII-only symbols.
+	 * @returns {String} The resulting string of Unicode symbols.
+	 */
+	function decode(input) {
+		// Don't use UCS-2
+		var output = [],
+		    inputLength = input.length,
+		    out,
+		    i = 0,
+		    n = initialN,
+		    bias = initialBias,
+		    basic,
+		    j,
+		    index,
+		    oldi,
+		    w,
+		    k,
+		    digit,
+		    t,
+		    /** Cached calculation results */
+		    baseMinusT;
+
+		// Handle the basic code points: let `basic` be the number of input code
+		// points before the last delimiter, or `0` if there is none, then copy
+		// the first basic code points to the output.
+
+		basic = input.lastIndexOf(delimiter);
+		if (basic < 0) {
+			basic = 0;
+		}
+
+		for (j = 0; j < basic; ++j) {
+			// if it's not a basic code point
+			if (input.charCodeAt(j) >= 0x80) {
+				error('not-basic');
+			}
+			output.push(input.charCodeAt(j));
+		}
+
+		// Main decoding loop: start just after the last delimiter if any basic code
+		// points were copied; start at the beginning otherwise.
+
+		for (index = basic > 0 ? basic + 1 : 0; index < inputLength; /* no final expression */) {
+
+			// `index` is the index of the next character to be consumed.
+			// Decode a generalized variable-length integer into `delta`,
+			// which gets added to `i`. The overflow checking is easier
+			// if we increase `i` as we go, then subtract off its starting
+			// value at the end to obtain `delta`.
+			for (oldi = i, w = 1, k = base; /* no condition */; k += base) {
+
+				if (index >= inputLength) {
+					error('invalid-input');
+				}
+
+				digit = basicToDigit(input.charCodeAt(index++));
+
+				if (digit >= base || digit > floor((maxInt - i) / w)) {
+					error('overflow');
+				}
+
+				i += digit * w;
+				t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias);
+
+				if (digit < t) {
+					break;
+				}
+
+				baseMinusT = base - t;
+				if (w > floor(maxInt / baseMinusT)) {
+					error('overflow');
+				}
+
+				w *= baseMinusT;
+
+			}
+
+			out = output.length + 1;
+			bias = adapt(i - oldi, out, oldi == 0);
+
+			// `i` was supposed to wrap around from `out` to `0`,
+			// incrementing `n` each time, so we'll fix that now:
+			if (floor(i / out) > maxInt - n) {
+				error('overflow');
+			}
+
+			n += floor(i / out);
+			i %= out;
+
+			// Insert `n` at position `i` of the output
+			output.splice(i++, 0, n);
+
+		}
+
+		return ucs2encode(output);
+	}
+
+	/**
+	 * Converts a string of Unicode symbols (e.g. a domain name label) to a
+	 * Punycode string of ASCII-only symbols.
+	 * @memberOf punycode
+	 * @param {String} input The string of Unicode symbols.
+	 * @returns {String} The resulting Punycode string of ASCII-only symbols.
+	 */
+	function encode(input) {
+		var n,
+		    delta,
+		    handledCPCount,
+		    basicLength,
+		    bias,
+		    j,
+		    m,
+		    q,
+		    k,
+		    t,
+		    currentValue,
+		    output = [],
+		    /** `inputLength` will hold the number of code points in `input`. */
+		    inputLength,
+		    /** Cached calculation results */
+		    handledCPCountPlusOne,
+		    baseMinusT,
+		    qMinusT;
+
+		// Convert the input in UCS-2 to Unicode
+		input = ucs2decode(input);
+
+		// Cache the length
+		inputLength = input.length;
+
+		// Initialize the state
+		n = initialN;
+		delta = 0;
+		bias = initialBias;
+
+		// Handle the basic code points
+		for (j = 0; j < inputLength; ++j) {
+			currentValue = input[j];
+			if (currentValue < 0x80) {
+				output.push(stringFromCharCode(currentValue));
+			}
+		}
+
+		handledCPCount = basicLength = output.length;
+
+		// `handledCPCount` is the number of code points that have been handled;
+		// `basicLength` is the number of basic code points.
+
+		// Finish the basic string - if it is not empty - with a delimiter
+		if (basicLength) {
+			output.push(delimiter);
+		}
+
+		// Main encoding loop:
+		while (handledCPCount < inputLength) {
+
+			// All non-basic code points < n have been handled already. Find the next
+			// larger one:
+			for (m = maxInt, j = 0; j < inputLength; ++j) {
+				currentValue = input[j];
+				if (currentValue >= n && currentValue < m) {
+					m = currentValue;
+				}
+			}
+
+			// Increase `delta` enough to advance the decoder's <n,i> state to <m,0>,
+			// but guard against overflow
+			handledCPCountPlusOne = handledCPCount + 1;
+			if (m - n > floor((maxInt - delta) / handledCPCountPlusOne)) {
+				error('overflow');
+			}
+
+			delta += (m - n) * handledCPCountPlusOne;
+			n = m;
+
+			for (j = 0; j < inputLength; ++j) {
+				currentValue = input[j];
+
+				if (currentValue < n && ++delta > maxInt) {
+					error('overflow');
+				}
+
+				if (currentValue == n) {
+					// Represent delta as a generalized variable-length integer
+					for (q = delta, k = base; /* no condition */; k += base) {
+						t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias);
+						if (q < t) {
+							break;
+						}
+						qMinusT = q - t;
+						baseMinusT = base - t;
+						output.push(
+							stringFromCharCode(digitToBasic(t + qMinusT % baseMinusT, 0))
+						);
+						q = floor(qMinusT / baseMinusT);
+					}
+
+					output.push(stringFromCharCode(digitToBasic(q, 0)));
+					bias = adapt(delta, handledCPCountPlusOne, handledCPCount == basicLength);
+					delta = 0;
+					++handledCPCount;
+				}
+			}
+
+			++delta;
+			++n;
+
+		}
+		return output.join('');
+	}
+
+	/**
+	 * Converts a Punycode string representing a domain name or an email address
+	 * to Unicode. Only the Punycoded parts of the input will be converted, i.e.
+	 * it doesn't matter if you call it on a string that has already been
+	 * converted to Unicode.
+	 * @memberOf punycode
+	 * @param {String} input The Punycoded domain name or email address to
+	 * convert to Unicode.
+	 * @returns {String} The Unicode representation of the given Punycode
+	 * string.
+	 */
+	function toUnicode(input) {
+		return mapDomain(input, function(string) {
+			return regexPunycode.test(string)
+				? decode(string.slice(4).toLowerCase())
+				: string;
+		});
+	}
+
+	/**
+	 * Converts a Unicode string representing a domain name or an email address to
+	 * Punycode. Only the non-ASCII parts of the domain name will be converted,
+	 * i.e. it doesn't matter if you call it with a domain that's already in
+	 * ASCII.
+	 * @memberOf punycode
+	 * @param {String} input The domain name or email address to convert, as a
+	 * Unicode string.
+	 * @returns {String} The Punycode representation of the given domain name or
+	 * email address.
+	 */
+	function toASCII(input) {
+		return mapDomain(input, function(string) {
+			return regexNonASCII.test(string)
+				? 'xn--' + encode(string)
+				: string;
+		});
+	}
+
+	/*--------------------------------------------------------------------------*/
+
+	/** Define the public API */
+	punycode = {
+		/**
+		 * A string representing the current Punycode.js version number.
+		 * @memberOf punycode
+		 * @type String
+		 */
+		'version': '1.4.1',
+		/**
+		 * An object of methods to convert from JavaScript's internal character
+		 * representation (UCS-2) to Unicode code points, and back.
+		 * @see <https://mathiasbynens.be/notes/javascript-encoding>
+		 * @memberOf punycode
+		 * @type Object
+		 */
+		'ucs2': {
+			'decode': ucs2decode,
+			'encode': ucs2encode
+		},
+		'decode': decode,
+		'encode': encode,
+		'toASCII': toASCII,
+		'toUnicode': toUnicode
+	};
+
+	/** Expose `punycode` */
+	// Some AMD build optimizers, like r.js, check for specific condition patterns
+	// like the following:
+	if (
+		true
+	) {
+		!(__WEBPACK_AMD_DEFINE_RESULT__ = (function() {
+			return punycode;
+		}).call(exports, __webpack_require__, exports, module),
+		__WEBPACK_AMD_DEFINE_RESULT__ !== undefined && (module.exports = __WEBPACK_AMD_DEFINE_RESULT__));
+	} else {}
+
+}(this));
+
+
+/***/ }),
+
+/***/ 8835:
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+"use strict";
+/*
+ * Copyright Joyent, Inc. and other Node contributors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to permit
+ * persons to whom the Software is furnished to do so, subject to the
+ * following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included
+ * in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+ * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+ * NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+ * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+ * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+ * USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+
+
+var punycode = __webpack_require__(1270);
+
+function Url() {
+  this.protocol = null;
+  this.slashes = null;
+  this.auth = null;
+  this.host = null;
+  this.port = null;
+  this.hostname = null;
+  this.hash = null;
+  this.search = null;
+  this.query = null;
+  this.pathname = null;
+  this.path = null;
+  this.href = null;
+}
+
+// Reference: RFC 3986, RFC 1808, RFC 2396
+
+/*
+ * define these here so at least they only have to be
+ * compiled once on the first module load.
+ */
+var protocolPattern = /^([a-z0-9.+-]+:)/i,
+  portPattern = /:[0-9]*$/,
+
+  // Special case for a simple path URL
+  simplePathPattern = /^(\/\/?(?!\/)[^?\s]*)(\?[^\s]*)?$/,
+
+  /*
+   * RFC 2396: characters reserved for delimiting URLs.
+   * We actually just auto-escape these.
+   */
+  delims = [
+    '<', '>', '"', '`', ' ', '\r', '\n', '\t'
+  ],
+
+  // RFC 2396: characters not allowed for various reasons.
+  unwise = [
+    '{', '}', '|', '\\', '^', '`'
+  ].concat(delims),
+
+  // Allowed by RFCs, but cause of XSS attacks.  Always escape these.
+  autoEscape = ['\''].concat(unwise),
+  /*
+   * Characters that are never ever allowed in a hostname.
+   * Note that any invalid chars are also handled, but these
+   * are the ones that are *expected* to be seen, so we fast-path
+   * them.
+   */
+  nonHostChars = [
+    '%', '/', '?', ';', '#'
+  ].concat(autoEscape),
+  hostEndingChars = [
+    '/', '?', '#'
+  ],
+  hostnameMaxLen = 255,
+  hostnamePartPattern = /^[+a-z0-9A-Z_-]{0,63}$/,
+  hostnamePartStart = /^([+a-z0-9A-Z_-]{0,63})(.*)$/,
+  // protocols that can allow "unsafe" and "unwise" chars.
+  unsafeProtocol = {
+    javascript: true,
+    'javascript:': true
+  },
+  // protocols that never have a hostname.
+  hostlessProtocol = {
+    javascript: true,
+    'javascript:': true
+  },
+  // protocols that always contain a // bit.
+  slashedProtocol = {
+    http: true,
+    https: true,
+    ftp: true,
+    gopher: true,
+    file: true,
+    'http:': true,
+    'https:': true,
+    'ftp:': true,
+    'gopher:': true,
+    'file:': true
+  },
+  querystring = __webpack_require__(5373);
+
+function urlParse(url, parseQueryString, slashesDenoteHost) {
+  if (url && typeof url === 'object' && url instanceof Url) { return url; }
+
+  var u = new Url();
+  u.parse(url, parseQueryString, slashesDenoteHost);
+  return u;
+}
+
+Url.prototype.parse = function (url, parseQueryString, slashesDenoteHost) {
+  if (typeof url !== 'string') {
+    throw new TypeError("Parameter 'url' must be a string, not " + typeof url);
+  }
+
+  /*
+   * Copy chrome, IE, opera backslash-handling behavior.
+   * Back slashes before the query string get converted to forward slashes
+   * See: https://code.google.com/p/chromium/issues/detail?id=25916
+   */
+  var queryIndex = url.indexOf('?'),
+    splitter = queryIndex !== -1 && queryIndex < url.indexOf('#') ? '?' : '#',
+    uSplit = url.split(splitter),
+    slashRegex = /\\/g;
+  uSplit[0] = uSplit[0].replace(slashRegex, '/');
+  url = uSplit.join(splitter);
+
+  var rest = url;
+
+  /*
+   * trim before proceeding.
+   * This is to support parse stuff like "  http://foo.com  \n"
+   */
+  rest = rest.trim();
+
+  if (!slashesDenoteHost && url.split('#').length === 1) {
+    // Try fast path regexp
+    var simplePath = simplePathPattern.exec(rest);
+    if (simplePath) {
+      this.path = rest;
+      this.href = rest;
+      this.pathname = simplePath[1];
+      if (simplePath[2]) {
+        this.search = simplePath[2];
+        if (parseQueryString) {
+          this.query = querystring.parse(this.search.substr(1));
+        } else {
+          this.query = this.search.substr(1);
+        }
+      } else if (parseQueryString) {
+        this.search = '';
+        this.query = {};
+      }
+      return this;
+    }
+  }
+
+  var proto = protocolPattern.exec(rest);
+  if (proto) {
+    proto = proto[0];
+    var lowerProto = proto.toLowerCase();
+    this.protocol = lowerProto;
+    rest = rest.substr(proto.length);
+  }
+
+  /*
+   * figure out if it's got a host
+   * user@server is *always* interpreted as a hostname, and url
+   * resolution will treat //foo/bar as host=foo,path=bar because that's
+   * how the browser resolves relative URLs.
+   */
+  if (slashesDenoteHost || proto || rest.match(/^\/\/[^@/]+@[^@/]+/)) {
+    var slashes = rest.substr(0, 2) === '//';
+    if (slashes && !(proto && hostlessProtocol[proto])) {
+      rest = rest.substr(2);
+      this.slashes = true;
+    }
+  }
+
+  if (!hostlessProtocol[proto] && (slashes || (proto && !slashedProtocol[proto]))) {
+
+    /*
+     * there's a hostname.
+     * the first instance of /, ?, ;, or # ends the host.
+     *
+     * If there is an @ in the hostname, then non-host chars *are* allowed
+     * to the left of the last @ sign, unless some host-ending character
+     * comes *before* the @-sign.
+     * URLs are obnoxious.
+     *
+     * ex:
+     * http://a@b@c/ => user:a@b host:c
+     * http://a@b?@c => user:a host:c path:/?@c
+     */
+
+    /*
+     * v0.12 TODO(isaacs): This is not quite how Chrome does things.
+     * Review our test case against browsers more comprehensively.
+     */
+
+    // find the first instance of any hostEndingChars
+    var hostEnd = -1;
+    for (var i = 0; i < hostEndingChars.length; i++) {
+      var hec = rest.indexOf(hostEndingChars[i]);
+      if (hec !== -1 && (hostEnd === -1 || hec < hostEnd)) { hostEnd = hec; }
+    }
+
+    /*
+     * at this point, either we have an explicit point where the
+     * auth portion cannot go past, or the last @ char is the decider.
+     */
+    var auth, atSign;
+    if (hostEnd === -1) {
+      // atSign can be anywhere.
+      atSign = rest.lastIndexOf('@');
+    } else {
+      /*
+       * atSign must be in auth portion.
+       * http://a@b/c@d => host:b auth:a path:/c@d
+       */
+      atSign = rest.lastIndexOf('@', hostEnd);
+    }
+
+    /*
+     * Now we have a portion which is definitely the auth.
+     * Pull that off.
+     */
+    if (atSign !== -1) {
+      auth = rest.slice(0, atSign);
+      rest = rest.slice(atSign + 1);
+      this.auth = decodeURIComponent(auth);
+    }
+
+    // the host is the remaining to the left of the first non-host char
+    hostEnd = -1;
+    for (var i = 0; i < nonHostChars.length; i++) {
+      var hec = rest.indexOf(nonHostChars[i]);
+      if (hec !== -1 && (hostEnd === -1 || hec < hostEnd)) { hostEnd = hec; }
+    }
+    // if we still have not hit it, then the entire thing is a host.
+    if (hostEnd === -1) { hostEnd = rest.length; }
+
+    this.host = rest.slice(0, hostEnd);
+    rest = rest.slice(hostEnd);
+
+    // pull out port.
+    this.parseHost();
+
+    /*
+     * we've indicated that there is a hostname,
+     * so even if it's empty, it has to be present.
+     */
+    this.hostname = this.hostname || '';
+
+    /*
+     * if hostname begins with [ and ends with ]
+     * assume that it's an IPv6 address.
+     */
+    var ipv6Hostname = this.hostname[0] === '[' && this.hostname[this.hostname.length - 1] === ']';
+
+    // validate a little.
+    if (!ipv6Hostname) {
+      var hostparts = this.hostname.split(/\./);
+      for (var i = 0, l = hostparts.length; i < l; i++) {
+        var part = hostparts[i];
+        if (!part) { continue; }
+        if (!part.match(hostnamePartPattern)) {
+          var newpart = '';
+          for (var j = 0, k = part.length; j < k; j++) {
+            if (part.charCodeAt(j) > 127) {
+              /*
+               * we replace non-ASCII char with a temporary placeholder
+               * we need this to make sure size of hostname is not
+               * broken by replacing non-ASCII by nothing
+               */
+              newpart += 'x';
+            } else {
+              newpart += part[j];
+            }
+          }
+          // we test again with ASCII char only
+          if (!newpart.match(hostnamePartPattern)) {
+            var validParts = hostparts.slice(0, i);
+            var notHost = hostparts.slice(i + 1);
+            var bit = part.match(hostnamePartStart);
+            if (bit) {
+              validParts.push(bit[1]);
+              notHost.unshift(bit[2]);
+            }
+            if (notHost.length) {
+              rest = '/' + notHost.join('.') + rest;
+            }
+            this.hostname = validParts.join('.');
+            break;
+          }
+        }
+      }
+    }
+
+    if (this.hostname.length > hostnameMaxLen) {
+      this.hostname = '';
+    } else {
+      // hostnames are always lower case.
+      this.hostname = this.hostname.toLowerCase();
+    }
+
+    if (!ipv6Hostname) {
+      /*
+       * IDNA Support: Returns a punycoded representation of "domain".
+       * It only converts parts of the domain name that
+       * have non-ASCII characters, i.e. it doesn't matter if
+       * you call it with a domain that already is ASCII-only.
+       */
+      this.hostname = punycode.toASCII(this.hostname);
+    }
+
+    var p = this.port ? ':' + this.port : '';
+    var h = this.hostname || '';
+    this.host = h + p;
+    this.href += this.host;
+
+    /*
+     * strip [ and ] from the hostname
+     * the host field still retains them, though
+     */
+    if (ipv6Hostname) {
+      this.hostname = this.hostname.substr(1, this.hostname.length - 2);
+      if (rest[0] !== '/') {
+        rest = '/' + rest;
+      }
+    }
+  }
+
+  /*
+   * now rest is set to the post-host stuff.
+   * chop off any delim chars.
+   */
+  if (!unsafeProtocol[lowerProto]) {
+
+    /*
+     * First, make 100% sure that any "autoEscape" chars get
+     * escaped, even if encodeURIComponent doesn't think they
+     * need to be.
+     */
+    for (var i = 0, l = autoEscape.length; i < l; i++) {
+      var ae = autoEscape[i];
+      if (rest.indexOf(ae) === -1) { continue; }
+      var esc = encodeURIComponent(ae);
+      if (esc === ae) {
+        esc = escape(ae);
+      }
+      rest = rest.split(ae).join(esc);
+    }
+  }
+
+  // chop off from the tail first.
+  var hash = rest.indexOf('#');
+  if (hash !== -1) {
+    // got a fragment string.
+    this.hash = rest.substr(hash);
+    rest = rest.slice(0, hash);
+  }
+  var qm = rest.indexOf('?');
+  if (qm !== -1) {
+    this.search = rest.substr(qm);
+    this.query = rest.substr(qm + 1);
+    if (parseQueryString) {
+      this.query = querystring.parse(this.query);
+    }
+    rest = rest.slice(0, qm);
+  } else if (parseQueryString) {
+    // no query string, but parseQueryString still requested
+    this.search = '';
+    this.query = {};
+  }
+  if (rest) { this.pathname = rest; }
+  if (slashedProtocol[lowerProto] && this.hostname && !this.pathname) {
+    this.pathname = '/';
+  }
+
+  // to support http.request
+  if (this.pathname || this.search) {
+    var p = this.pathname || '';
+    var s = this.search || '';
+    this.path = p + s;
+  }
+
+  // finally, reconstruct the href based on what has been validated.
+  this.href = this.format();
+  return this;
+};
+
+// format a parsed object into a url string
+function urlFormat(obj) {
+  /*
+   * ensure it's an object, and not a string url.
+   * If it's an obj, this is a no-op.
+   * this way, you can call url_format() on strings
+   * to clean up potentially wonky urls.
+   */
+  if (typeof obj === 'string') { obj = urlParse(obj); }
+  if (!(obj instanceof Url)) { return Url.prototype.format.call(obj); }
+  return obj.format();
+}
+
+Url.prototype.format = function () {
+  var auth = this.auth || '';
+  if (auth) {
+    auth = encodeURIComponent(auth);
+    auth = auth.replace(/%3A/i, ':');
+    auth += '@';
+  }
+
+  var protocol = this.protocol || '',
+    pathname = this.pathname || '',
+    hash = this.hash || '',
+    host = false,
+    query = '';
+
+  if (this.host) {
+    host = auth + this.host;
+  } else if (this.hostname) {
+    host = auth + (this.hostname.indexOf(':') === -1 ? this.hostname : '[' + this.hostname + ']');
+    if (this.port) {
+      host += ':' + this.port;
+    }
+  }
+
+  if (this.query && typeof this.query === 'object' && Object.keys(this.query).length) {
+    query = querystring.stringify(this.query, {
+      arrayFormat: 'repeat',
+      addQueryPrefix: false
+    });
+  }
+
+  var search = this.search || (query && ('?' + query)) || '';
+
+  if (protocol && protocol.substr(-1) !== ':') { protocol += ':'; }
+
+  /*
+   * only the slashedProtocols get the //.  Not mailto:, xmpp:, etc.
+   * unless they had them to begin with.
+   */
+  if (this.slashes || (!protocol || slashedProtocol[protocol]) && host !== false) {
+    host = '//' + (host || '');
+    if (pathname && pathname.charAt(0) !== '/') { pathname = '/' + pathname; }
+  } else if (!host) {
+    host = '';
+  }
+
+  if (hash && hash.charAt(0) !== '#') { hash = '#' + hash; }
+  if (search && search.charAt(0) !== '?') { search = '?' + search; }
+
+  pathname = pathname.replace(/[?#]/g, function (match) {
+    return encodeURIComponent(match);
+  });
+  search = search.replace('#', '%23');
+
+  return protocol + host + pathname + search + hash;
+};
+
+function urlResolve(source, relative) {
+  return urlParse(source, false, true).resolve(relative);
+}
+
+Url.prototype.resolve = function (relative) {
+  return this.resolveObject(urlParse(relative, false, true)).format();
+};
+
+function urlResolveObject(source, relative) {
+  if (!source) { return relative; }
+  return urlParse(source, false, true).resolveObject(relative);
+}
+
+Url.prototype.resolveObject = function (relative) {
+  if (typeof relative === 'string') {
+    var rel = new Url();
+    rel.parse(relative, false, true);
+    relative = rel;
+  }
+
+  var result = new Url();
+  var tkeys = Object.keys(this);
+  for (var tk = 0; tk < tkeys.length; tk++) {
+    var tkey = tkeys[tk];
+    result[tkey] = this[tkey];
+  }
+
+  /*
+   * hash is always overridden, no matter what.
+   * even href="" will remove it.
+   */
+  result.hash = relative.hash;
+
+  // if the relative url is empty, then there's nothing left to do here.
+  if (relative.href === '') {
+    result.href = result.format();
+    return result;
+  }
+
+  // hrefs like //foo/bar always cut to the protocol.
+  if (relative.slashes && !relative.protocol) {
+    // take everything except the protocol from relative
+    var rkeys = Object.keys(relative);
+    for (var rk = 0; rk < rkeys.length; rk++) {
+      var rkey = rkeys[rk];
+      if (rkey !== 'protocol') { result[rkey] = relative[rkey]; }
+    }
+
+    // urlParse appends trailing / to urls like http://www.example.com
+    if (slashedProtocol[result.protocol] && result.hostname && !result.pathname) {
+      result.pathname = '/';
+      result.path = result.pathname;
+    }
+
+    result.href = result.format();
+    return result;
+  }
+
+  if (relative.protocol && relative.protocol !== result.protocol) {
+    /*
+     * if it's a known url protocol, then changing
+     * the protocol does weird things
+     * first, if it's not file:, then we MUST have a host,
+     * and if there was a path
+     * to begin with, then we MUST have a path.
+     * if it is file:, then the host is dropped,
+     * because that's known to be hostless.
+     * anything else is assumed to be absolute.
+     */
+    if (!slashedProtocol[relative.protocol]) {
+      var keys = Object.keys(relative);
+      for (var v = 0; v < keys.length; v++) {
+        var k = keys[v];
+        result[k] = relative[k];
+      }
+      result.href = result.format();
+      return result;
+    }
+
+    result.protocol = relative.protocol;
+    if (!relative.host && !hostlessProtocol[relative.protocol]) {
+      var relPath = (relative.pathname || '').split('/');
+      while (relPath.length && !(relative.host = relPath.shift())) { }
+      if (!relative.host) { relative.host = ''; }
+      if (!relative.hostname) { relative.hostname = ''; }
+      if (relPath[0] !== '') { relPath.unshift(''); }
+      if (relPath.length < 2) { relPath.unshift(''); }
+      result.pathname = relPath.join('/');
+    } else {
+      result.pathname = relative.pathname;
+    }
+    result.search = relative.search;
+    result.query = relative.query;
+    result.host = relative.host || '';
+    result.auth = relative.auth;
+    result.hostname = relative.hostname || relative.host;
+    result.port = relative.port;
+    // to support http.request
+    if (result.pathname || result.search) {
+      var p = result.pathname || '';
+      var s = result.search || '';
+      result.path = p + s;
+    }
+    result.slashes = result.slashes || relative.slashes;
+    result.href = result.format();
+    return result;
+  }
+
+  var isSourceAbs = result.pathname && result.pathname.charAt(0) === '/',
+    isRelAbs = relative.host || relative.pathname && relative.pathname.charAt(0) === '/',
+    mustEndAbs = isRelAbs || isSourceAbs || (result.host && relative.pathname),
+    removeAllDots = mustEndAbs,
+    srcPath = result.pathname && result.pathname.split('/') || [],
+    relPath = relative.pathname && relative.pathname.split('/') || [],
+    psychotic = result.protocol && !slashedProtocol[result.protocol];
+
+  /*
+   * if the url is a non-slashed url, then relative
+   * links like ../.. should be able
+   * to crawl up to the hostname, as well.  This is strange.
+   * result.protocol has already been set by now.
+   * Later on, put the first path part into the host field.
+   */
+  if (psychotic) {
+    result.hostname = '';
+    result.port = null;
+    if (result.host) {
+      if (srcPath[0] === '') { srcPath[0] = result.host; } else { srcPath.unshift(result.host); }
+    }
+    result.host = '';
+    if (relative.protocol) {
+      relative.hostname = null;
+      relative.port = null;
+      if (relative.host) {
+        if (relPath[0] === '') { relPath[0] = relative.host; } else { relPath.unshift(relative.host); }
+      }
+      relative.host = null;
+    }
+    mustEndAbs = mustEndAbs && (relPath[0] === '' || srcPath[0] === '');
+  }
+
+  if (isRelAbs) {
+    // it's absolute.
+    result.host = relative.host || relative.host === '' ? relative.host : result.host;
+    result.hostname = relative.hostname || relative.hostname === '' ? relative.hostname : result.hostname;
+    result.search = relative.search;
+    result.query = relative.query;
+    srcPath = relPath;
+    // fall through to the dot-handling below.
+  } else if (relPath.length) {
+    /*
+     * it's relative
+     * throw away the existing file, and take the new path instead.
+     */
+    if (!srcPath) { srcPath = []; }
+    srcPath.pop();
+    srcPath = srcPath.concat(relPath);
+    result.search = relative.search;
+    result.query = relative.query;
+  } else if (relative.search != null) {
+    /*
+     * just pull out the search.
+     * like href='?foo'.
+     * Put this after the other two cases because it simplifies the booleans
+     */
+    if (psychotic) {
+      result.host = srcPath.shift();
+      result.hostname = result.host;
+      /*
+       * occationaly the auth can get stuck only in host
+       * this especially happens in cases like
+       * url.resolveObject('mailto:local1@domain1', 'local2@domain2')
+       */
+      var authInHost = result.host && result.host.indexOf('@') > 0 ? result.host.split('@') : false;
+      if (authInHost) {
+        result.auth = authInHost.shift();
+        result.hostname = authInHost.shift();
+        result.host = result.hostname;
+      }
+    }
+    result.search = relative.search;
+    result.query = relative.query;
+    // to support http.request
+    if (result.pathname !== null || result.search !== null) {
+      result.path = (result.pathname ? result.pathname : '') + (result.search ? result.search : '');
+    }
+    result.href = result.format();
+    return result;
+  }
+
+  if (!srcPath.length) {
+    /*
+     * no path at all.  easy.
+     * we've already handled the other stuff above.
+     */
+    result.pathname = null;
+    // to support http.request
+    if (result.search) {
+      result.path = '/' + result.search;
+    } else {
+      result.path = null;
+    }
+    result.href = result.format();
+    return result;
+  }
+
+  /*
+   * if a url ENDs in . or .., then it must get a trailing slash.
+   * however, if it ends in anything else non-slashy,
+   * then it must NOT get a trailing slash.
+   */
+  var last = srcPath.slice(-1)[0];
+  var hasTrailingSlash = (result.host || relative.host || srcPath.length > 1) && (last === '.' || last === '..') || last === '';
+
+  /*
+   * strip single dots, resolve double dots to parent dir
+   * if the path tries to go above the root, `up` ends up > 0
+   */
+  var up = 0;
+  for (var i = srcPath.length; i >= 0; i--) {
+    last = srcPath[i];
+    if (last === '.') {
+      srcPath.splice(i, 1);
+    } else if (last === '..') {
+      srcPath.splice(i, 1);
+      up++;
+    } else if (up) {
+      srcPath.splice(i, 1);
+      up--;
+    }
+  }
+
+  // if the path is allowed to go above the root, restore leading ..s
+  if (!mustEndAbs && !removeAllDots) {
+    for (; up--; up) {
+      srcPath.unshift('..');
+    }
+  }
+
+  if (mustEndAbs && srcPath[0] !== '' && (!srcPath[0] || srcPath[0].charAt(0) !== '/')) {
+    srcPath.unshift('');
+  }
+
+  if (hasTrailingSlash && (srcPath.join('/').substr(-1) !== '/')) {
+    srcPath.push('');
+  }
+
+  var isAbsolute = srcPath[0] === '' || (srcPath[0] && srcPath[0].charAt(0) === '/');
+
+  // put the host back
+  if (psychotic) {
+    result.hostname = isAbsolute ? '' : srcPath.length ? srcPath.shift() : '';
+    result.host = result.hostname;
+    /*
+     * occationaly the auth can get stuck only in host
+     * this especially happens in cases like
+     * url.resolveObject('mailto:local1@domain1', 'local2@domain2')
+     */
+    var authInHost = result.host && result.host.indexOf('@') > 0 ? result.host.split('@') : false;
+    if (authInHost) {
+      result.auth = authInHost.shift();
+      result.hostname = authInHost.shift();
+      result.host = result.hostname;
+    }
+  }
+
+  mustEndAbs = mustEndAbs || (result.host && srcPath.length);
+
+  if (mustEndAbs && !isAbsolute) {
+    srcPath.unshift('');
+  }
+
+  if (srcPath.length > 0) {
+    result.pathname = srcPath.join('/');
+  } else {
+    result.pathname = null;
+    result.path = null;
+  }
+
+  // to support request.http
+  if (result.pathname !== null || result.search !== null) {
+    result.path = (result.pathname ? result.pathname : '') + (result.search ? result.search : '');
+  }
+  result.auth = relative.auth || result.auth;
+  result.slashes = result.slashes || relative.slashes;
+  result.href = result.format();
+  return result;
+};
+
+Url.prototype.parseHost = function () {
+  var host = this.host;
+  var port = portPattern.exec(host);
+  if (port) {
+    port = port[0];
+    if (port !== ':') {
+      this.port = port.substr(1);
+    }
+    host = host.substr(0, host.length - port.length);
+  }
+  if (host) { this.hostname = host; }
+};
+
+exports.parse = urlParse;
+exports.resolve = urlResolve;
+exports.resolveObject = urlResolveObject;
+exports.format = urlFormat;
+
+exports.Url = Url;
+
 
 /***/ }),
 
@@ -10602,339 +15413,31 @@ module.exports = {
 
 /***/ }),
 
-/***/ 8625:
+/***/ 2634:
 /***/ (() => {
 
 /* (ignored) */
 
 /***/ }),
 
-/***/ 6504:
+/***/ 1677:
 /***/ (() => {
 
 /* (ignored) */
 
 /***/ }),
 
-/***/ 6580:
+/***/ 76:
 /***/ (() => {
 
 /* (ignored) */
 
 /***/ }),
 
-/***/ 8622:
-/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
+/***/ 5248:
+/***/ (() => {
 
-"use strict";
-/* harmony export */ __webpack_require__.d(__webpack_exports__, {
-/* harmony export */   $: () => (/* binding */ fieldTagNames),
-/* harmony export */   AC: () => (/* binding */ ExtraSamplesValues),
-/* harmony export */   Hm: () => (/* binding */ geoKeyNames),
-/* harmony export */   NZ: () => (/* binding */ arrayFields),
-/* harmony export */   S3: () => (/* binding */ LercAddCompression),
-/* harmony export */   TZ: () => (/* binding */ LercParameters),
-/* harmony export */   s$: () => (/* binding */ fieldTypes),
-/* harmony export */   ub: () => (/* binding */ photometricInterpretations)
-/* harmony export */ });
-/* unused harmony exports fieldTags, fieldTagTypes, fieldTypeNames, geoKeys */
-const fieldTagNames = {
-  // TIFF Baseline
-  0x013B: 'Artist',
-  0x0102: 'BitsPerSample',
-  0x0109: 'CellLength',
-  0x0108: 'CellWidth',
-  0x0140: 'ColorMap',
-  0x0103: 'Compression',
-  0x8298: 'Copyright',
-  0x0132: 'DateTime',
-  0x0152: 'ExtraSamples',
-  0x010A: 'FillOrder',
-  0x0121: 'FreeByteCounts',
-  0x0120: 'FreeOffsets',
-  0x0123: 'GrayResponseCurve',
-  0x0122: 'GrayResponseUnit',
-  0x013C: 'HostComputer',
-  0x010E: 'ImageDescription',
-  0x0101: 'ImageLength',
-  0x0100: 'ImageWidth',
-  0x010F: 'Make',
-  0x0119: 'MaxSampleValue',
-  0x0118: 'MinSampleValue',
-  0x0110: 'Model',
-  0x00FE: 'NewSubfileType',
-  0x0112: 'Orientation',
-  0x0106: 'PhotometricInterpretation',
-  0x011C: 'PlanarConfiguration',
-  0x0128: 'ResolutionUnit',
-  0x0116: 'RowsPerStrip',
-  0x0115: 'SamplesPerPixel',
-  0x0131: 'Software',
-  0x0117: 'StripByteCounts',
-  0x0111: 'StripOffsets',
-  0x00FF: 'SubfileType',
-  0x0107: 'Threshholding',
-  0x011A: 'XResolution',
-  0x011B: 'YResolution',
-
-  // TIFF Extended
-  0x0146: 'BadFaxLines',
-  0x0147: 'CleanFaxData',
-  0x0157: 'ClipPath',
-  0x0148: 'ConsecutiveBadFaxLines',
-  0x01B1: 'Decode',
-  0x01B2: 'DefaultImageColor',
-  0x010D: 'DocumentName',
-  0x0150: 'DotRange',
-  0x0141: 'HalftoneHints',
-  0x015A: 'Indexed',
-  0x015B: 'JPEGTables',
-  0x011D: 'PageName',
-  0x0129: 'PageNumber',
-  0x013D: 'Predictor',
-  0x013F: 'PrimaryChromaticities',
-  0x0214: 'ReferenceBlackWhite',
-  0x0153: 'SampleFormat',
-  0x0154: 'SMinSampleValue',
-  0x0155: 'SMaxSampleValue',
-  0x022F: 'StripRowCounts',
-  0x014A: 'SubIFDs',
-  0x0124: 'T4Options',
-  0x0125: 'T6Options',
-  0x0145: 'TileByteCounts',
-  0x0143: 'TileLength',
-  0x0144: 'TileOffsets',
-  0x0142: 'TileWidth',
-  0x012D: 'TransferFunction',
-  0x013E: 'WhitePoint',
-  0x0158: 'XClipPathUnits',
-  0x011E: 'XPosition',
-  0x0211: 'YCbCrCoefficients',
-  0x0213: 'YCbCrPositioning',
-  0x0212: 'YCbCrSubSampling',
-  0x0159: 'YClipPathUnits',
-  0x011F: 'YPosition',
-
-  // EXIF
-  0x9202: 'ApertureValue',
-  0xA001: 'ColorSpace',
-  0x9004: 'DateTimeDigitized',
-  0x9003: 'DateTimeOriginal',
-  0x8769: 'Exif IFD',
-  0x9000: 'ExifVersion',
-  0x829A: 'ExposureTime',
-  0xA300: 'FileSource',
-  0x9209: 'Flash',
-  0xA000: 'FlashpixVersion',
-  0x829D: 'FNumber',
-  0xA420: 'ImageUniqueID',
-  0x9208: 'LightSource',
-  0x927C: 'MakerNote',
-  0x9201: 'ShutterSpeedValue',
-  0x9286: 'UserComment',
-
-  // IPTC
-  0x83BB: 'IPTC',
-
-  // ICC
-  0x8773: 'ICC Profile',
-
-  // XMP
-  0x02BC: 'XMP',
-
-  // GDAL
-  0xA480: 'GDAL_METADATA',
-  0xA481: 'GDAL_NODATA',
-
-  // Photoshop
-  0x8649: 'Photoshop',
-
-  // GeoTiff
-  0x830E: 'ModelPixelScale',
-  0x8482: 'ModelTiepoint',
-  0x85D8: 'ModelTransformation',
-  0x87AF: 'GeoKeyDirectory',
-  0x87B0: 'GeoDoubleParams',
-  0x87B1: 'GeoAsciiParams',
-
-  // LERC
-  0xC5F2: 'LercParameters',
-};
-
-const fieldTags = {};
-for (const key in fieldTagNames) {
-  if (fieldTagNames.hasOwnProperty(key)) {
-    fieldTags[fieldTagNames[key]] = parseInt(key, 10);
-  }
-}
-
-const fieldTagTypes = {
-  256: 'SHORT',
-  257: 'SHORT',
-  258: 'SHORT',
-  259: 'SHORT',
-  262: 'SHORT',
-  273: 'LONG',
-  274: 'SHORT',
-  277: 'SHORT',
-  278: 'LONG',
-  279: 'LONG',
-  282: 'RATIONAL',
-  283: 'RATIONAL',
-  284: 'SHORT',
-  286: 'SHORT',
-  287: 'RATIONAL',
-  296: 'SHORT',
-  297: 'SHORT',
-  305: 'ASCII',
-  306: 'ASCII',
-  338: 'SHORT',
-  339: 'SHORT',
-  513: 'LONG',
-  514: 'LONG',
-  1024: 'SHORT',
-  1025: 'SHORT',
-  2048: 'SHORT',
-  2049: 'ASCII',
-  3072: 'SHORT',
-  3073: 'ASCII',
-  33550: 'DOUBLE',
-  33922: 'DOUBLE',
-  34264: 'DOUBLE',
-  34665: 'LONG',
-  34735: 'SHORT',
-  34736: 'DOUBLE',
-  34737: 'ASCII',
-  42113: 'ASCII',
-};
-
-const arrayFields = [
-  fieldTags.BitsPerSample,
-  fieldTags.ExtraSamples,
-  fieldTags.SampleFormat,
-  fieldTags.StripByteCounts,
-  fieldTags.StripOffsets,
-  fieldTags.StripRowCounts,
-  fieldTags.TileByteCounts,
-  fieldTags.TileOffsets,
-  fieldTags.SubIFDs,
-];
-
-const fieldTypeNames = {
-  0x0001: 'BYTE',
-  0x0002: 'ASCII',
-  0x0003: 'SHORT',
-  0x0004: 'LONG',
-  0x0005: 'RATIONAL',
-  0x0006: 'SBYTE',
-  0x0007: 'UNDEFINED',
-  0x0008: 'SSHORT',
-  0x0009: 'SLONG',
-  0x000A: 'SRATIONAL',
-  0x000B: 'FLOAT',
-  0x000C: 'DOUBLE',
-  // IFD offset, suggested by https://owl.phy.queensu.ca/~phil/exiftool/standards.html
-  0x000D: 'IFD',
-  // introduced by BigTIFF
-  0x0010: 'LONG8',
-  0x0011: 'SLONG8',
-  0x0012: 'IFD8',
-};
-
-const fieldTypes = {};
-for (const key in fieldTypeNames) {
-  if (fieldTypeNames.hasOwnProperty(key)) {
-    fieldTypes[fieldTypeNames[key]] = parseInt(key, 10);
-  }
-}
-
-const photometricInterpretations = {
-  WhiteIsZero: 0,
-  BlackIsZero: 1,
-  RGB: 2,
-  Palette: 3,
-  TransparencyMask: 4,
-  CMYK: 5,
-  YCbCr: 6,
-
-  CIELab: 8,
-  ICCLab: 9,
-};
-
-const ExtraSamplesValues = {
-  Unspecified: 0,
-  Assocalpha: 1,
-  Unassalpha: 2,
-};
-
-const LercParameters = {
-  Version: 0,
-  AddCompression: 1,
-};
-
-const LercAddCompression = {
-  None: 0,
-  Deflate: 1,
-  Zstandard: 2,
-};
-
-const geoKeyNames = {
-  1024: 'GTModelTypeGeoKey',
-  1025: 'GTRasterTypeGeoKey',
-  1026: 'GTCitationGeoKey',
-  2048: 'GeographicTypeGeoKey',
-  2049: 'GeogCitationGeoKey',
-  2050: 'GeogGeodeticDatumGeoKey',
-  2051: 'GeogPrimeMeridianGeoKey',
-  2052: 'GeogLinearUnitsGeoKey',
-  2053: 'GeogLinearUnitSizeGeoKey',
-  2054: 'GeogAngularUnitsGeoKey',
-  2055: 'GeogAngularUnitSizeGeoKey',
-  2056: 'GeogEllipsoidGeoKey',
-  2057: 'GeogSemiMajorAxisGeoKey',
-  2058: 'GeogSemiMinorAxisGeoKey',
-  2059: 'GeogInvFlatteningGeoKey',
-  2060: 'GeogAzimuthUnitsGeoKey',
-  2061: 'GeogPrimeMeridianLongGeoKey',
-  2062: 'GeogTOWGS84GeoKey',
-  3072: 'ProjectedCSTypeGeoKey',
-  3073: 'PCSCitationGeoKey',
-  3074: 'ProjectionGeoKey',
-  3075: 'ProjCoordTransGeoKey',
-  3076: 'ProjLinearUnitsGeoKey',
-  3077: 'ProjLinearUnitSizeGeoKey',
-  3078: 'ProjStdParallel1GeoKey',
-  3079: 'ProjStdParallel2GeoKey',
-  3080: 'ProjNatOriginLongGeoKey',
-  3081: 'ProjNatOriginLatGeoKey',
-  3082: 'ProjFalseEastingGeoKey',
-  3083: 'ProjFalseNorthingGeoKey',
-  3084: 'ProjFalseOriginLongGeoKey',
-  3085: 'ProjFalseOriginLatGeoKey',
-  3086: 'ProjFalseOriginEastingGeoKey',
-  3087: 'ProjFalseOriginNorthingGeoKey',
-  3088: 'ProjCenterLongGeoKey',
-  3089: 'ProjCenterLatGeoKey',
-  3090: 'ProjCenterEastingGeoKey',
-  3091: 'ProjCenterNorthingGeoKey',
-  3092: 'ProjScaleAtNatOriginGeoKey',
-  3093: 'ProjScaleAtCenterGeoKey',
-  3094: 'ProjAzimuthAngleGeoKey',
-  3095: 'ProjStraightVertPoleLongGeoKey',
-  3096: 'ProjRectifiedGridAngleGeoKey',
-  4096: 'VerticalCSTypeGeoKey',
-  4097: 'VerticalCitationGeoKey',
-  4098: 'VerticalDatumGeoKey',
-  4099: 'VerticalUnitsGeoKey',
-};
-
-const geoKeys = {};
-for (const key in geoKeyNames) {
-  if (geoKeyNames.hasOwnProperty(key)) {
-    geoKeys[geoKeyNames[key]] = parseInt(key, 10);
-  }
-}
-
+/* (ignored) */
 
 /***/ })
 
@@ -10958,7 +15461,7 @@ for (const key in geoKeyNames) {
 /******/ 		};
 /******/ 	
 /******/ 		// Execute the module function
-/******/ 		__webpack_modules__[moduleId](module, module.exports, __webpack_require__);
+/******/ 		__webpack_modules__[moduleId].call(module.exports, module, module.exports, __webpack_require__);
 /******/ 	
 /******/ 		// Flag the module as loaded
 /******/ 		module.loaded = true;
@@ -11106,6 +15609,15 @@ for (const key in geoKeyNames) {
 /******/ 		};
 /******/ 	})();
 /******/ 	
+/******/ 	/* webpack/runtime/node module decorator */
+/******/ 	(() => {
+/******/ 		__webpack_require__.nmd = (module) => {
+/******/ 			module.paths = [];
+/******/ 			if (!module.children) module.children = [];
+/******/ 			return module;
+/******/ 		};
+/******/ 	})();
+/******/ 	
 /******/ 	/* webpack/runtime/publicPath */
 /******/ 	(() => {
 /******/ 		var scriptUrl;
@@ -11224,7 +15736,8 @@ for (const key in geoKeyNames) {
 /******/ 	// startup
 /******/ 	// Load entry module and return exports
 /******/ 	// This entry module is referenced by other modules so it can't be inlined
-/******/ 	var __webpack_exports__ = __webpack_require__(385);
+/******/ 	__webpack_require__(9251);
+/******/ 	var __webpack_exports__ = __webpack_require__(4617);
 /******/ 	
 /******/ 	return __webpack_exports__;
 /******/ })()

@@ -23,7 +23,7 @@ module.exports = (env, argv) => {
     //if (target === 'web') node['fs'] = 'empty';
 
     return {
-        entry: './src/index.js',
+        entry: ['./src/index.js', './src_geotiff/geotiff.js'],
         mode,
         target: target,
         output: {
@@ -57,8 +57,8 @@ module.exports = (env, argv) => {
       },
       resolve: {
         fallback: {
-          fs: require.resolve('browserify-fs'),
-           // "fs": false,
+          //fs: require.resolve('browserify-fs'),
+            "fs": false,
             "tls": false,
             "net": false,
             "path": false,

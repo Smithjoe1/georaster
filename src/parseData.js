@@ -1,4 +1,4 @@
-import {fromArrayBuffer, fromUrl, fromBlob} from 'geotiff';
+import {fromArrayBuffer, fromUrl, fromBlob} from '../src_geotiff/geotiff.js';
 import {getPalette} from 'geotiff-palette';
 import calcImageStats from 'calc-image-stats';
 import {unflatten} from './utils.js';
