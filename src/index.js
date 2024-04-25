@@ -6,7 +6,7 @@
 import Worker from './worker.js';
 import parseData from './parseData.js';
 import {unflatten} from './utils.js';
-import {fromUrl, fromUrls} from 'geotiff';
+import {fromUrl, fromUrls} from '../src_geotiff/geotiff.js';
 import toCanvas from 'georaster-to-canvas';
 
 function urlExists(url) {
@@ -20,7 +20,8 @@ function urlExists(url) {
 }
 
 function getValues(geotiff, options) {
-  const {left, top, right, bottom, width, height, resampleMethod} = options;
+  const {left, top, right, bottom, width, height, resampleMethod } = options;
+  //const {left, top, right, bottom, width, height, resampleMethod, resampleSteps} = options;
   // note this.image and this.geotiff both have a readRasters method;
   // they are not the same thing. use this.geotiff for experimental version
   // that reads from best overview
